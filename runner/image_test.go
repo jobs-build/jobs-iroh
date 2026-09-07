@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/jobs-build/amber-store-core/key"
+	"github.com/amber-store/core/key"
 )
 
 func testKey(t *testing.T, s string) key.Key {

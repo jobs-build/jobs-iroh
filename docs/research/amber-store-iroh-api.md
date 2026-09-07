@@ -4,7 +4,7 @@ Source: `~/fables-for-robots/amber-store-iroh` (module `github.com/jobs-build/am
 All `file:line` cites are into that repo unless prefixed. go-iroh cites are into the module cache copy of
 `github.com/tmc/go-iroh@v0.0.0-20260714221401-b17af420bb03`.
 
-**Headline for jobs-iroh:** this repo is ALREADY built on `github.com/jobs-build/amber-store-core`
+**Headline for jobs-iroh:** this repo is ALREADY built on `github.com/amber-store/core`
 (go.mod requires `amber-store-core v0.0.0-20260720222444-a37d35fa4ecf`); there is **zero** `draganm/amber-store`
 anywhere in it (verified by grep). The draganm→core port cut-points live in the old `jobs` repo, not here.
 `protocol/`, `wantsync/`, `server/`, `relaymode/` are importable library packages and reusable as-is;

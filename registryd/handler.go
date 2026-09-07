@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/amber-store/core/key"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/jobs-build/amber-store-core/key"
 )
 
 // repoName is the single repository the registry serves; its tags are build

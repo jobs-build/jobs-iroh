@@ -7,8 +7,8 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/jobs-build/amber-store-core/amberpack"
-	"github.com/jobs-build/amber-store-core/fstree"
+	"github.com/amber-store/core/amberpack"
+	"github.com/amber-store/core/fstree"
 )
 
 // sendPack serializes objs as one amberpack embedded in TData frames and

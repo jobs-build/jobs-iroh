@@ -7,9 +7,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jobs-build/amber-store-core/key"
-	"github.com/jobs-build/amber-store-core/packstore"
-	"github.com/jobs-build/amber-store-core/refstore"
+	"github.com/amber-store/core/key"
+	"github.com/amber-store/core/packstore"
+	"github.com/amber-store/core/refstore"
 )
 
 // gcTestServer opens a Server over throwaway stores with one raw ref

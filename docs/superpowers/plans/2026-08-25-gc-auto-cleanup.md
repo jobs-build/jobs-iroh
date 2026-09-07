@@ -60,7 +60,7 @@
 - Modify: `go.mod`, `go.sum`
 
 **Interfaces:**
-- Produces: importable `github.com/jobs-build/amber-store-core/gc` package: `gc.Open(dir string, objects *packstore.Store, refs *refstore.Store, opts gc.Options) (*gc.Collector, error)`; `(*Collector).PrepareRef(root key.Key) (commit, abort func(), err error)`; `(*Collector).Run(ctx, garbage float64) (gc.CycleStats, error)`; `(*Collector).Status(ctx) (gc.Status, error)`; `(*Collector).Close() error`; `gc.Options{Grace, Garbage, MinFree, Rate, Interval, Jobs}`; `gc.Status{Packs, LiveBytes, GarbageBytes, Refs, Marked, Last *CycleStats, LastError string}`; `gc.CycleStats{Start, Duration, MarkDuration, SweepDuration, Threshold, Marked, Scored, Reaped, CopiedRecords, CopiedBytes, FreedBytes}`.
+- Produces: importable `github.com/amber-store/core/gc` package: `gc.Open(dir string, objects *packstore.Store, refs *refstore.Store, opts gc.Options) (*gc.Collector, error)`; `(*Collector).PrepareRef(root key.Key) (commit, abort func(), err error)`; `(*Collector).Run(ctx, garbage float64) (gc.CycleStats, error)`; `(*Collector).Status(ctx) (gc.Status, error)`; `(*Collector).Close() error`; `gc.Options{Grace, Garbage, MinFree, Rate, Interval, Jobs}`; `gc.Status{Packs, LiveBytes, GarbageBytes, Refs, Marked, Last *CycleStats, LastError string}`; `gc.CycleStats{Start, Duration, MarkDuration, SweepDuration, Threshold, Marked, Scored, Reaped, CopiedRecords, CopiedBytes, FreedBytes}`.
 
 - [ ] **Step 1: Bump the dependency**
 
@@ -68,7 +68,7 @@ The local clone at `~/jobs-build/amber-store-core` has the mark-sweep merge as c
 
 ```bash
 cd /home/dragan/jobs-build/jobs-iroh
-nix develop -c go get github.com/jobs-build/amber-store-core@a2ff135cd1c94bdd04c9eca4c5019062eb4dbe81
+nix develop -c go get github.com/amber-store/core@a2ff135cd1c94bdd04c9eca4c5019062eb4dbe81
 nix develop -c go mod tidy
 ```
 
@@ -757,9 +757,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jobs-build/amber-store-core/key"
-	"github.com/jobs-build/amber-store-core/packstore"
-	"github.com/jobs-build/amber-store-core/refstore"
+	"github.com/amber-store/core/key"
+	"github.com/amber-store/core/packstore"
+	"github.com/amber-store/core/refstore"
 )
 
 // gcTestServer opens a Server over throwaway stores with one raw ref
@@ -1323,7 +1323,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/jobs-build/amber-store-core/gc"
+	"github.com/amber-store/core/gc"
 
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/api"

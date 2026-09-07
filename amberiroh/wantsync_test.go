@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jobs-build/amber-store-core/ingest"
-	"github.com/jobs-build/amber-store-core/key"
-	"github.com/jobs-build/amber-store-core/packstore"
+	"github.com/amber-store/core/ingest"
+	"github.com/amber-store/core/key"
+	"github.com/amber-store/core/packstore"
 )
 
 // buildTree ingests a small directory tree into a fresh packstore and

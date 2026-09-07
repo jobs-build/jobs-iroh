@@ -5,7 +5,7 @@ import (
 	"io"
 	"iter"
 
-	"github.com/jobs-build/amber-store-core/amberpack"
+	"github.com/amber-store/core/amberpack"
 )
 
 // chunkWriter buffers pack bytes and emits them as ChunkSize TData frames.

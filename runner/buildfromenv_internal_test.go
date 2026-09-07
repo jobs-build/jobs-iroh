@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jobs-build/amber-store-core/key"
+	"github.com/amber-store/core/key"
 )
 
 func TestEnsureBuildFromTreeNoopWhenAbsentLocally(t *testing.T) {

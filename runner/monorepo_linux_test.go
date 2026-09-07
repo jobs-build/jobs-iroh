@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jobs-build/amber-store-core/key"
+	"github.com/amber-store/core/key"
 	"github.com/jobs-build/jobs-iroh/cover"
 )
 

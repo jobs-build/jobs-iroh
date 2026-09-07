@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/amber-store/core/key"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/validate"
-	"github.com/jobs-build/amber-store-core/key"
 	"github.com/jobs-build/jobs-iroh/amber"
 )
 

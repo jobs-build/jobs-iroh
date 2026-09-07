@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jobs-build/amber-store-core/key"
+	"github.com/amber-store/core/key"
 )
 
 // fetcherStaleAfter is how old an abandoned fetcher-* work dir must be
