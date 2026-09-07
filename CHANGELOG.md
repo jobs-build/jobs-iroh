@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.31.1 — 2026-09-07
+
+- **amber-store-core moved to `github.com/amber-store/core`.** The
+  repository was transferred from `jobs-build/amber-store-core` to
+  `amber-store/core` and its module renamed; v0.0.4 is the first version
+  served under the new path. jobs-iroh's requirement (v0.0.2 → v0.0.4) and
+  every import were switched, with gofmt re-sorting the import blocks the
+  new path now leads. No functional change; no wire, API, or ALPN changes.
+
 ## v0.31.0 — 2026-08-25
 
 - **Runner and client local-store GC** (docs/design/2026-08-25-runner-client-gc.md),
