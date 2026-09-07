@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/amber-store/transport-iroh/amberiroh"
 	irohkey "github.com/tmc/go-iroh/key"
 
 	"github.com/tmc/go-iroh/iroh"

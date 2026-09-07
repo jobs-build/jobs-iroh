@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/amber-store/transport-iroh/amberiroh"
 	"github.com/tmc/go-iroh/iroh"
 	irohkey "github.com/tmc/go-iroh/key"
 )

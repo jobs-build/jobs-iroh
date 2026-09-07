@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/amber-store/transport-iroh/amberiroh"
 )
 
 // pinAssertEvery coalesces pin-asserts per ref: as long as an image keeps

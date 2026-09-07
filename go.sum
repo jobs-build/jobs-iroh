@@ -18,6 +18,8 @@ github.com/aclements/go-perfevent v0.0.0-20240301234650-f7843625020f h1:JjxwchlO
 github.com/aclements/go-perfevent v0.0.0-20240301234650-f7843625020f/go.mod h1:tMDTce/yLLN/SK8gMOxQfnyeMeCg8KGzp0D1cbECEeo=
 github.com/amber-store/core v0.0.4 h1:/FK1csgS2hxv0gkJt56ucNV7lJuUaQm6OkUijtvk2pE=
 github.com/amber-store/core v0.0.4/go.mod h1:AqoKse+rvzViiShDyD80PRUZFXNMNy4jc7VbilsV4k4=
+github.com/amber-store/transport-iroh v0.2.0 h1:r0ax28kWu40/DoqLTdjTBCxZo4m8vqvHo1hyegG9czI=
+github.com/amber-store/transport-iroh v0.2.0/go.mod h1:De5dcB1y68XktXkYKeixgyND0VmeC6tXmsCFPHRlIZM=
 github.com/antithesishq/antithesis-sdk-go v0.7.0-default-no-op h1:Z/MZK75wC/NSrkgqeNIa7jexam9uWzhLmFTSCPI/kn0=
 github.com/antithesishq/antithesis-sdk-go v0.7.0-default-no-op/go.mod h1:FQyySiasQQM8735Ddel3MRojmy4dA1IqCeyJ5jmPMbI=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=

@@ -14,7 +14,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/amber-store/transport-iroh/amberiroh"
 	"github.com/jobs-build/jobs-iroh/hostaddr"
 	"github.com/tmc/go-iroh/dns"
 	"github.com/tmc/go-iroh/iroh"
