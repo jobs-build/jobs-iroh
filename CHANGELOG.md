@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.32.0 — 2026-09-07
+
+- **`amberiroh/` de-vendored.** The store-sync transport is imported from
+  `github.com/amber-store/transport-iroh/amberiroh` (v0.2.0) again instead
+  of the copy this repo carried since 2026-07-27. Everything that copy grew
+  — `DataEndpoints` advertising, server-side stream retirement,
+  throughput-weighted want dealing, TPin and the GC hooks — was ported
+  upstream first, so behavior, wire format and ALPNs are unchanged. Future
+  protocol or server changes land upstream and arrive here as a version
+  bump.
+
 ## v0.31.1 — 2026-09-07
 
 - **amber-store-core moved to `github.com/amber-store/core`.** The
