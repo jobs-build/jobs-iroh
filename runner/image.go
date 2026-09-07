@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/amber-store/core/key"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
-	"github.com/jobs-build/amber-store-core/key"
 	"github.com/jobs-build/jobs-iroh/amber"
 )
 

@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jobs-build/amber-store-core/key"
+	"github.com/amber-store/core/key"
 	"github.com/urfave/cli/v2"
 
 	"github.com/jobs-build/jobs-iroh/amberclient"

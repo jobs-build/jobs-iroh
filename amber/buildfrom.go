@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/jobs-build/amber-store-core/fstree"
-	"github.com/jobs-build/amber-store-core/key"
+	"github.com/amber-store/core/fstree"
+	"github.com/amber-store/core/key"
 	"golang.org/x/sys/unix"
 )
 

@@ -460,7 +460,7 @@ today's bounded buffers). Renewal ticks remain the universal retry engine.
 
 ## 9. draganm/amber-store leakage — the port cut-points
 
-Everything below must be re-based onto `github.com/jobs-build/amber-store-core`:
+Everything below must be re-based onto `github.com/amber-store/core`:
 
 | Leak | Where | What jobs-iroh needs |
 |---|---|---|

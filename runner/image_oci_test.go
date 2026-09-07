@@ -7,9 +7,9 @@ import (
 	"io"
 	"testing"
 
+	"github.com/amber-store/core/key"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
-	"github.com/jobs-build/amber-store-core/key"
 )
 
 // readLayerBlob reads the bytes a registry would serve for this layer.

@@ -1,5 +1,5 @@
 // Package amber is the jobs-iroh content-addressed store seam over
-// github.com/jobs-build/amber-store-core: an embedded, in-process
+// github.com/amber-store/core: an embedded, in-process
 // store — no daemon, no HTTP, no signing. A Store owns the two core pieces
 // under one directory (<dir>/packstore for objects, <dir>/refs for name→key
 // references) plus the tree-assembly and ref conventions the rest of
@@ -34,9 +34,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jobs-build/amber-store-core/key"
-	"github.com/jobs-build/amber-store-core/packstore"
-	"github.com/jobs-build/amber-store-core/refstore"
+	"github.com/amber-store/core/key"
+	"github.com/amber-store/core/packstore"
+	"github.com/amber-store/core/refstore"
 )
 
 // Store owns an open amber-store-core store: a packstore (objects) and a

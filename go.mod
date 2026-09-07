@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/amber-store/core v0.0.4
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -11,7 +12,6 @@ require (
 	github.com/creack/pty v1.1.9
 	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/google/go-containerregistry v0.21.7
-	github.com/jobs-build/amber-store-core v0.0.2
 	github.com/klauspost/compress v1.19.0
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0

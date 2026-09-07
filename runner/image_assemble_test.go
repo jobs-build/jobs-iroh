@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/amber-store/core/key"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
-	"github.com/jobs-build/amber-store-core/key"
 	"github.com/jobs-build/jobs-iroh/amber"
 )
 

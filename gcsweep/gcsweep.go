@@ -22,7 +22,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/jobs-build/amber-store-core/gc"
+	"github.com/amber-store/core/gc"
 
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/reftrack"

@@ -3,7 +3,7 @@ package runner
 import (
 	"testing"
 
-	"github.com/jobs-build/amber-store-core/key"
+	"github.com/amber-store/core/key"
 )
 
 func TestBuildLabelPrefersName(t *testing.T) {

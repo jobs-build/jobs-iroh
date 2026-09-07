@@ -3,8 +3,8 @@ package builddef
 import (
 	"fmt"
 
+	"github.com/amber-store/core/key"
 	"github.com/fxamacker/cbor/v2"
-	"github.com/jobs-build/amber-store-core/key"
 )
 
 // KindTree is an Input whose value is a fixed, already-present amber content

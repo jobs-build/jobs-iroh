@@ -1009,7 +1009,7 @@ locally and remotely.
   `jobs-runner-nats/1.0`, `jobs-runner-amber/1.0`, `jobs-admin/1.0`,
   `jobs-amber-admin/1.0`); embedded NATS/JetStream (`DontListen`, tunneled
   over iroh streams) and embedded
-  [amber-store-core](https://github.com/jobs-build/amber-store-core);
+  [amber-store-core](https://github.com/amber-store/core);
   in-memory scheduler (join = get-or-create by content key, doneness = ref
   existence, ported fail-closed ref gate); work queue
   `jobs.<platform>.<class>`, RESULTS stream with publish-before-ack +
