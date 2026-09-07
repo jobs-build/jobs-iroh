@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/amber-store/transport-iroh/amberiroh"
 )
 
 func TestPinAsserterCoalesces(t *testing.T) {

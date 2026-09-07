@@ -35,7 +35,7 @@ import (
 
 	"github.com/amber-store/core/key"
 	"github.com/amber-store/core/reference"
-	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/amber-store/transport-iroh/amberiroh"
 	"github.com/tmc/go-iroh/iroh"
 	irohkey "github.com/tmc/go-iroh/key"
 	"github.com/tmc/go-iroh/netaddr"

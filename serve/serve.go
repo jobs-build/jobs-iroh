@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/amber-store/transport-iroh/amberiroh"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/tmc/go-iroh/iroh"

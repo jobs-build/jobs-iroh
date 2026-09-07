@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/amber-store/core/key"
-	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/amber-store/transport-iroh/amberiroh"
 
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/amberclient"
