@@ -3,4 +3,4 @@
 package version
 
 // Version is the current jobs-iroh release.
-const Version = "0.32.0"
+const Version = "0.33.0"

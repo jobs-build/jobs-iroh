@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.33.0 — 2026-09-08
+
+- **go-iroh v0.2.0, transport-iroh v0.3.0.** A behaviour release of the
+  transport: net_report now runs by default whenever relays are
+  configured (the explicit `iroh.WithNetReport` calls in `serve` and
+  `amberclient` are now the default and stay), path MTU discovery is on
+  (the don't-fragment bit is set, so a datagram too large for the path
+  fails instead of fragmenting), mDNS answers SRV and TXT questions and
+  discovers over IPv6 as well as IPv4, and `relay.Map` is safe for
+  concurrent use but must not be copied. No exported go-iroh signature
+  changed; no wire, API or ALPN change here, and the test suite passes
+  unchanged. transport-iroh v0.3.0 carries the same bump and a corrected
+  throughput note: one endpoint receives ~350 MB/s on loopback and a
+  1 Gbit WAN's line rate, so sharded transfers only matter above that.
+
 ## v0.32.0 — 2026-09-07
 
 - **`amberiroh/` de-vendored.** The store-sync transport is imported from
