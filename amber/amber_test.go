@@ -123,7 +123,7 @@ func TestIngestMaterializeRoundTrip(t *testing.T) {
 	ctx := t.Context()
 
 	src := t.TempDir()
-	big := make([]byte, 1<<20) // multi-chunk under the 256 KiB max chunk size
+	big := make([]byte, 4<<20) // multi-chunk above the 1 MiB max chunk size
 	rand.New(rand.NewSource(42)).Read(big)
 	write(t, filepath.Join(src, "a.txt"), []byte("hello world\n"), 0o644)
 	write(t, filepath.Join(src, "bin", "run.sh"), []byte("#!/bin/sh\necho hi\n"), 0o755)
