@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.34.0 — 2026-09-10
+
+- **core v0.0.7, transport-iroh v0.4.0.** core's library defaults are now
+  min 32 KiB / normal 512 KiB / max 1 MiB chunks and 2 GiB packs (they
+  were ultracdc's 2/10/64 KiB and 256 MiB). Here that means the server's
+  packstore seals packs at 2 GiB from now on; ingest keeps chunking at
+  the explicit 32/128/256 KiB in `amber/build.go`, so object keys and
+  dedup are unchanged. transport-iroh v0.4.0 is the same core bump plus
+  its `amber` CLI defaulting to the library sizes. No wire, API or ALPN
+  change; the test suite passes unchanged.
+
 ## v0.33.0 — 2026-09-08
 
 - **go-iroh v0.2.0, transport-iroh v0.3.0.** A behaviour release of the
