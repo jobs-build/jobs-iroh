@@ -22,10 +22,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// defByteOpts and the item-chunker bit width match amber's ingest defaults, so
-// identical content dedups across jobs-iroh, jobs, and the amber CLI. These
+// defByteOpts and the item-chunker bit width are core's library defaults
+// (32 KiB / 512 KiB / 1 MiB since core v0.0.7), so identical content dedups
+// across jobs-iroh, the amber CLI and every other core-based store. These
 // are IDENTITY-CRITICAL: every content key depends on them.
-var defByteOpts = &chunkers.ByteOpts{MinSize: 32 << 10, NormalSize: 128 << 10, MaxSize: 256 << 10}
+var defByteOpts = &chunkers.ByteOpts{MinSize: chunkers.DefaultMinSize, NormalSize: chunkers.DefaultNormalSize, MaxSize: chunkers.DefaultMaxSize}
 
 func itemChunker() chunkers.ItemChunker { return chunkers.NewItemChunker(7) }
 
