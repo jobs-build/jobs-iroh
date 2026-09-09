@@ -4,8 +4,8 @@ go 1.26.5
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/amber-store/core v0.0.4
-	github.com/amber-store/transport-iroh v0.3.0
+	github.com/amber-store/core v0.0.7
+	github.com/amber-store/transport-iroh v0.4.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
