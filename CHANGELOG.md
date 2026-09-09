@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.35.0 — 2026-09-10
+
+- **Chunk sizes follow core's library defaults.** `amber/build.go`
+  chunked file content at an explicit 32/128/256 KiB; it now uses
+  `chunkers.Default{Min,Normal,Max}Size` (32 KiB / 512 KiB / 1 MiB
+  since core v0.0.7), so content dedups across jobs-iroh, the amber CLI
+  and every other core-based store again. Identity-critical: objects
+  ingested from now on do not dedup against objects already in a store;
+  existing content stays readable. No wire, API or ALPN change.
+
 ## v0.34.0 — 2026-09-10
 
 - **core v0.0.7, transport-iroh v0.4.0.** core's library defaults are now
