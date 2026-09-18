@@ -1,7 +1,7 @@
-# Containerize jobs-registry. The module tree is private
-# (GOPRIVATE=github.com/jobs-build/*), so the binary is built OUTSIDE
-# the image where credentials exist, and copied in — scripts/release-images.sh
-# does that for all three images at release time; by hand:
+# Containerize jobs-registry. The binary is built OUTSIDE the image and copied
+# in, which keeps the image COPY-only — the Release images workflow
+# (.github/workflows/release-images.yml) does that for all three images at
+# release time; by hand:
 #
 #   CGO_ENABLED=0 GOOS=linux nix develop -c \
 #     go build -trimpath -o deploy/jobs-registry/jobs-registry-amd64 ./cmd/jobs-registry

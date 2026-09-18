@@ -1,0 +1,130 @@
+name: Release images
+
+# The release images, published to GHCR for every version tag:
+#
+#   ghcr.io/jobs-build/jobs-iroh-server  ← cmd/jobs-server    (deploy/jobs-server)
+#   ghcr.io/jobs-build/jobs-iroh-runner  ← cmd/jobs-runner    (deploy/jobs-runner)
+#   ghcr.io/jobs-build/jobs-registry     ← cmd/jobs-registry  (deploy/jobs-registry)
+#
+# Each is a linux/amd64 + linux/arm64 manifest list tagged v<version>, plus
+# latest when the tag is the highest release. Pushing a v* tag publishes it;
+# "Run workflow" with a tag publishes (or republishes) an existing release; a
+# pull request touching this file or a Dockerfile builds without pushing.
+#
+# The binaries are cross-compiled here (CGO off, -trimpath) from a clean
+# checkout of the tag — a dirty tree would flip Go's vcs.modified stamp — and
+# copied into COPY-only Dockerfiles, so the arm64 half needs no QEMU.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, e.g. v0.35.1
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/release-images.yml
+      - deploy/*/Dockerfile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-images-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - binary: jobs-server
+            image: jobs-iroh-server
+          - binary: jobs-runner
+            image: jobs-iroh-runner
+          - binary: jobs-registry
+            image: jobs-registry
+    env:
+      BINARY: ${{ matrix.binary }}
+      IMAGE: ghcr.io/jobs-build/${{ matrix.image }}
+      PUSH: ${{ github.event_name != 'pull_request' }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve version
+        id: version
+        run: |
+          V=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' version/version.go)
+          [ -n "$V" ] || { echo "::error::no version in version/version.go"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          latest=false
+          if [ "$PUSH" = true ]; then
+            [ "$TAG" = "v$V" ] || { echo "::error::tag $TAG does not match version/version.go ($V)"; exit 1; }
+            git fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+            [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)" ] || { echo "::error::$TAG is not the checked-out commit"; exit 1; }
+            highest=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' | sort -V | tail -n1)
+            if [ "$TAG" = "$highest" ]; then latest=true; fi
+          fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        run: |
+          [ -z "$(git status --porcelain)" ] || { echo "::error::dirty checkout"; git status --porcelain; exit 1; }
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -o "deploy/$BINARY/$BINARY-$arch" "./cmd/$BINARY"
+          done
+          go version -m "deploy/$BINARY/$BINARY-amd64" | grep -F 'vcs.modified=false'
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        env:
+          V: ${{ steps.version.outputs.version }}
+          REV: ${{ steps.version.outputs.revision }}
+          LATEST: ${{ steps.version.outputs.latest }}
+        run: |
+          tags=(-t "$IMAGE:v$V")
+          if [ "$LATEST" = true ]; then tags+=(-t "$IMAGE:latest"); fi
+          src=https://github.com/jobs-build/jobs-iroh
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 --provenance=false --sbom=false \
+            --label org.opencontainers.image.version="$V" \
+            --label org.opencontainers.image.revision="$REV" \
+            --label org.opencontainers.image.source="$src" \
+            --annotation "index:org.opencontainers.image.version=$V" \
+            --annotation "index:org.opencontainers.image.revision=$REV" \
+            --annotation "index:org.opencontainers.image.source=$src" \
+            "${tags[@]}" --output "type=image,push=$PUSH" "deploy/$BINARY"
+
+      - name: Verify platforms
+        if: env.PUSH == 'true'
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          platforms=$(docker buildx imagetools inspect --raw "$IMAGE:v$V" | jq -r '[.manifests[] | "\(.platform.os)/\(.platform.architecture)"] | sort | join(" ")')
+          echo "$IMAGE:v$V → $platforms"
+          [ "$platforms" = "linux/amd64 linux/arm64" ] || { echo "::error::unexpected platforms: $platforms"; exit 1; }

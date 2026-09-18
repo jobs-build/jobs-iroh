@@ -1,7 +1,7 @@
 # Containerize jobs-server. Built the same way as deploy/jobs-registry: the
-# binary is compiled OUTSIDE the image (the module tree is private,
-# GOPRIVATE=github.com/jobs-build/*) and copied in — see scripts/release-images.sh,
-# which builds all three images from a clean tag checkout.
+# binary is compiled OUTSIDE the image and copied in — see
+# .github/workflows/release-images.yml, which builds all three images from a
+# clean tag checkout.
 #
 # distroless/static ships CA certs (relay/pkarr discovery) and nothing else; the
 # nonroot variant runs the server as 65532 — a deployment gives /data to that

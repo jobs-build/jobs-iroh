@@ -132,19 +132,21 @@ A sample k8s Deployment lives in
 
 ## Images
 
-Every release publishes three multi-arch (amd64 + arm64) images to Docker
-Hub, tagged `v<version>` and `latest`:
+Every release publishes three multi-arch (amd64 + arm64) images to the
+GitHub Container Registry, tagged `v<version>` and `latest`:
 
 | Image | Binary | Runs as |
 |---|---|---|
-| `dmilhdef/jobs-iroh-server` | `jobs-server` | distroless nonroot (65532), `/data` = `--data-dir` |
-| `dmilhdef/jobs-iroh-runner` | `jobs-runner` | root — its sandboxes need user/mount/pid namespaces and cgroups (privileged in k8s) |
-| `dmilhdef/jobs-registry` | `jobs-registry` | distroless nonroot (65532), `/data` = `--data-dir` |
+| `ghcr.io/jobs-build/jobs-iroh-server` | `jobs-server` | distroless nonroot (65532), `/data` = `--data-dir` |
+| `ghcr.io/jobs-build/jobs-iroh-runner` | `jobs-runner` | root — its sandboxes need user/mount/pid namespaces and cgroups (privileged in k8s) |
+| `ghcr.io/jobs-build/jobs-registry` | `jobs-registry` | distroless nonroot (65532), `/data` = `--data-dir` |
 
 They hold the static binary and CA certificates, nothing else — builds and
 imports run in hermetic roots assembled from the store, so the runner image
-needs no userland. Dockerfiles under [`deploy/`](deploy/), built by
-[`scripts/release-images.sh`](scripts/release-images.sh).
+needs no userland. Dockerfiles under [`deploy/`](deploy/), built and pushed
+by the [Release images](.github/workflows/release-images.yml) workflow when
+a release tag is pushed. Releases up to v0.35.0 are on Docker Hub as
+`dmilhdef/…` instead.
 
 ## Dev setup
 

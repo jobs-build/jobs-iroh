@@ -1,5 +1,5 @@
 # Containerize jobs-runner. Built like deploy/jobs-registry: binary compiled
-# OUTSIDE the image and copied in — see scripts/release-images.sh.
+# OUTSIDE the image and copied in — see .github/workflows/release-images.yml.
 #
 # Root, not nonroot: the runner creates user/mount/pid namespaces for its
 # build and import sandboxes and parks jobs in their own cgroups for memory
