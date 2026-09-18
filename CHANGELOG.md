@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.35.1 — 2026-09-18
+
+- **go-iroh v0.2.1, transport-iroh v0.4.1.** A fix release of the
+  transport: a freshly punched path is selected at once instead of on
+  the next 5s heartbeat (relay-to-direct upgrade drops from ~5s to
+  ~60ms), PTO and loss alarms stay armed on blocked and multipath
+  connections, PTO probes are ack-eliciting, replies leave from the
+  address a datagram arrived on, and Linux receives coalesce with
+  UDP_GRO. `iroh.ConnStats` gains `PTOs` and `SpuriousLosses`. No
+  exported go-iroh signature changed; no wire, API or ALPN change here,
+  and the test suite passes unchanged. transport-iroh v0.4.1 carries the
+  same bump.
+
 ## v0.35.0 — 2026-09-10
 
 - **Chunk sizes follow core's library defaults.** `amber/build.go`
