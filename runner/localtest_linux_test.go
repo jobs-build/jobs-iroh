@@ -63,7 +63,7 @@ def test():
         env = {},
         script = '''
 echo "hanging" >&2
-sleep 300
+busybox sleep 300
 ''',
         timeout = "2s",
     )
