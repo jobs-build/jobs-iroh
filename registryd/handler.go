@@ -351,17 +351,25 @@ func (r *registry) recoverDigest(reqCtx context.Context, d v1.Hash) bool {
 }
 
 // serveTags lists the pullable build keys: every build-from:K on the
-// jobs-server plus every locally assembled image. Server unreachable → the
-// local set alone, so a cached registry keeps answering. Supports the
-// standard n/last paging.
+// jobs-server plus every locally assembled image. Test submits also write
+// build-from:K (they share the buildfrom stage) but have no output: their
+// Ks — marked by the server's test:K bookkeeping ref — are skipped. Server
+// unreachable → the local set alone, so a cached registry keeps answering.
+// Supports the standard n/last paging.
 func (r *registry) serveTags(w http.ResponseWriter, req *http.Request) {
 	seen := map[string]bool{}
 	for _, rec := range r.listRecords() {
 		seen[rec.K] = true
 	}
 	if refs, err := r.sync.Refs(req.Context()); err == nil {
+		tests := map[string]bool{}
 		for _, ref := range refs {
-			if kHex, ok := strings.CutPrefix(ref.Name, "build-from:"); ok {
+			if kHex, ok := strings.CutPrefix(ref.Name, "test:"); ok {
+				tests[kHex] = true
+			}
+		}
+		for _, ref := range refs {
+			if kHex, ok := strings.CutPrefix(ref.Name, "build-from:"); ok && !tests[kHex] {
 				if _, valid := parseHexKey(kHex); valid {
 					seen[kHex] = true
 				}

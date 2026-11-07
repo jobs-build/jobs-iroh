@@ -262,3 +262,43 @@ func TestBuildFromTreeDirEntry(t *testing.T) {
 		t.Errorf("dir entry not keying F: fRoot=%s fA=%s fB=%s", fRoot, fA, fB)
 	}
 }
+
+func TestTestFromTreeSplicesRecipeAlways(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	_, root := pruneFixture(t, s)
+	params := []byte(`{"a":1}`)
+	recipe := []byte("def test(): pass\n")
+
+	fTest, err := s.TestFromTree(ctx, root, "services/api", params, "linux/amd64", recipe)
+	if err != nil {
+		t.Fatalf("TestFromTree: %v", err)
+	}
+	if got, want := lsNames(t, s, fTest, ""), []string{"TESTS.jobs", "dir", "env", "params", "platform"}; !slices.Equal(got, want) {
+		t.Errorf("test F-tree entries = %v, want %v", got, want)
+	}
+	// A build over the same env with the SAME bytes as its override must not
+	// collide: the test entry name is the mode marker.
+	fBuild, err := s.BuildFromTree(ctx, root, "services/api", params, "linux/amd64", recipe)
+	if err != nil {
+		t.Fatalf("BuildFromTree: %v", err)
+	}
+	if fBuild == fTest {
+		t.Fatal("test F equals build F for the same recipe bytes")
+	}
+	// Deterministic, and the recipe bytes key it.
+	again, err := s.TestFromTree(ctx, root, "services/api", params, "linux/amd64", recipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != fTest {
+		t.Fatal("TestFromTree is not deterministic")
+	}
+	other, err := s.TestFromTree(ctx, root, "services/api", params, "linux/amd64", []byte("def test(): return 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other == fTest {
+		t.Fatal("recipe bytes do not key the test F")
+	}
+}

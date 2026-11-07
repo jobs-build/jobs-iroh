@@ -34,21 +34,153 @@ func localBuildFrom(ctx context.Context, st *amber.Store, brc BuildRunCfg, cfg D
 	if err != nil {
 		return key.Key{}, fmt.Errorf("source dir %q not found: %w", cfg.Dir, err)
 	}
+	envKey, dirEntry := buildRoot, ""
+	if cfg.Dir != "" {
+		envKey, dirEntry = sourceKey, cfg.Dir
+	}
+	if cfg.Test {
+		// Same recipe resolution as the server's RunBuildFrom test branch.
+		recipeSrc, err := resolveTestRecipe(ctx, st, buildRoot, cfg.BuildFile, nil)
+		if err != nil {
+			return key.Key{}, err
+		}
+		f, err := st.TestFromTree(ctx, envKey, dirEntry, cfg.Params, brc.Platform, recipeSrc)
+		if err != nil {
+			return key.Key{}, fmt.Errorf("assemble test-from tree: %w", err)
+		}
+		return f, nil
+	}
 	// Same recipe resolution + override normalization as the server's RunBuildFrom,
 	// so a local F equals the server's F for the same environment (cache join).
 	override, err := resolveRecipeOverride(ctx, st, buildRoot, cfg.BuildFile, nil)
 	if err != nil {
 		return key.Key{}, err
 	}
-	envKey, dirEntry := buildRoot, ""
-	if cfg.Dir != "" {
-		envKey, dirEntry = sourceKey, cfg.Dir
-	}
 	f, err := st.BuildFromTree(ctx, envKey, dirEntry, cfg.Params, brc.Platform, override)
 	if err != nil {
 		return key.Key{}, fmt.Errorf("assemble build-from tree: %w", err)
 	}
 	return f, nil
+}
+
+// driveTestStages drives the F-keyed TEST pipeline for f (tests design §6):
+// the test-passed:F alias fast-paths the whole thing; otherwise the shared
+// resolve/pin stages run (joining existing refs), every pinned input is
+// built, KP and then KT are derived through the same cover functions the
+// server runs, and test-passed:<KT> either memo-hits (alias republished,
+// step reported cached) or RunTest runs and records it.
+func (d *developDriver) driveTestStages(f key.Key, p *Progress) (key.Key, error) {
+	if kt, ok, err := d.st.GetKey(d.ctx, cover.TestPassedRef(f)); err != nil {
+		return key.Key{}, err
+	} else if ok {
+		p.Cached("test")
+		return kt, nil
+	}
+
+	pinnedExists, err := refExists(d.ctx, d.st, "build-pinned:"+f.String())
+	if err != nil {
+		return key.Key{}, err
+	}
+	if pinnedExists {
+		p.Cached("plugin-resolve")
+		p.Cached("pin")
+	} else {
+		prExists, err := refExists(d.ctx, d.st, "build-plugin-resolved:"+f.String())
+		if err != nil {
+			return key.Key{}, err
+		}
+		if prExists {
+			p.Cached("plugin-resolve")
+		} else {
+			done := p.Start("plugin-resolve")
+			if err := outcomeErr("plugin-resolve "+f.String(), RunPluginResolve(d.ctx, d.st, d.rw, d.brc, f)); err != nil {
+				done(err)
+				return key.Key{}, err
+			}
+			done(nil)
+		}
+		if err := d.ensurePinDeps(f, p); err != nil {
+			return key.Key{}, err
+		}
+		done := p.Start("pin")
+		if err := outcomeErr("pin "+f.String(), RunPin(d.ctx, d.st, d.rw, d.brc, f)); err != nil {
+			done(err)
+			return key.Key{}, err
+		}
+		done(nil)
+	}
+
+	if err := d.ensureInputs(f, p); err != nil {
+		return key.Key{}, err
+	}
+	kp, err := d.deriveKP(f)
+	if err != nil {
+		return key.Key{}, err
+	}
+	kt, err := d.deriveKT(kp)
+	if err != nil {
+		return key.Key{}, err
+	}
+	if _, ok, err := d.st.GetKey(d.ctx, cover.TestPassedRef(kt)); err != nil {
+		return key.Key{}, err
+	} else if ok {
+		if err := d.st.PutRef(d.ctx, cover.TestPassedRef(f), kt); err != nil {
+			return key.Key{}, err
+		}
+		p.Cached("test")
+		return kt, nil
+	}
+	done := p.Start("test")
+	if err := outcomeErr("test "+kt.String(), RunTest(d.ctx, d.st, d.rw, d.brc, NamespaceBuildExecutor{}, kt)); err != nil {
+		done(err)
+		return key.Key{}, err
+	}
+	done(nil)
+	if err := d.st.PutRef(d.ctx, cover.TestPassedRef(f), kt); err != nil {
+		return key.Key{}, err
+	}
+	return kt, nil
+}
+
+// deriveKT resolves the pinned test's inputs to content and computes KT via
+// the shared cover.DeriveTest (identity-critical: bit-identical to the
+// server's derivation), then writes the build-pinned:<KT> alias RunTest reads
+// and the kt-tree/<KT> carrier. Idempotent.
+func (d *developDriver) deriveKT(kp key.Key) (key.Key, error) {
+	pinnedKey, ok, err := d.st.GetKey(d.ctx, "build-pinned:"+kp.String())
+	if err != nil {
+		return key.Key{}, err
+	}
+	if !ok {
+		return key.Key{}, fmt.Errorf("build-pinned:%s missing after KP derivation", kp.String())
+	}
+	pinnedBytes, err := pullFileBytes(d.ctx, d.st, pinnedKey)
+	if err != nil {
+		return key.Key{}, err
+	}
+	pinned, err := builddef.DecodePinned(pinnedBytes)
+	if err != nil {
+		return key.Key{}, err
+	}
+	platform, err := readTreeFile(d.ctx, d.st, kp, "platform")
+	if err != nil {
+		return key.Key{}, fmt.Errorf("read KP-tree platform: %w", err)
+	}
+	resolved, err := cover.ResolveInputs(d.ctx, d.st, pinned.Inputs)
+	if err != nil {
+		return key.Key{}, fmt.Errorf("resolve test inputs: %w", err)
+	}
+	kt, err := cover.DeriveTest(d.ctx, d.st, kp, pinned, string(platform), resolved)
+	if err != nil {
+		return key.Key{}, fmt.Errorf("derive KT: %w", err)
+	}
+	if err := d.st.PutRef(d.ctx, "build-pinned:"+kt.String(), pinnedKey); err != nil {
+		return key.Key{}, err
+	}
+	if err := d.st.PutRef(d.ctx, cover.KTTreeRef(kt), kt); err != nil {
+		return key.Key{}, err
+	}
+	return kt, nil
 }
 
 // driveFStages drives the F-keyed pipeline for f, skipping any stage whose result

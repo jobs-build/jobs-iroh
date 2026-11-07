@@ -131,3 +131,10 @@ type BuildResult struct {
 type BuildExecutor interface {
 	RunBuild(ctx context.Context, st *amber.Store, spec BuildSpec) (BuildResult, error)
 }
+
+// TestOutcome is TestFromSource's result: the test's identity F (its test
+// F-tree) and its run identity KT (what test-passed:<KT> records).
+type TestOutcome struct {
+	F  key.Key
+	KT key.Key
+}

@@ -31,6 +31,13 @@ const (
 // the WRONG (narrow) semantics under the new K.
 const CtxWidened = 2
 
+// Default recipe file names: BUILD.jobs holds build() (and plugins()),
+// TESTS.jobs holds test() (and plugins()) — tests design §3.
+const (
+	BuildFile = "BUILD.jobs"
+	TestsFile = "TESTS.jobs"
+)
+
 // canonEnc encodes deterministically (sorted map keys, shortest ints) so equal
 // values produce equal bytes — the property that makes K a content address.
 var canonEnc = func() cbor.EncMode {
@@ -74,6 +81,26 @@ type Definition struct {
 	BuildJobs []byte          `cbor:"buildJobs,omitempty"` // optional override recipe (design §6)
 	BuildFile string          `cbor:"buildFile,omitempty"` // optional recipe path relative to Dir (default BUILD.jobs)
 	Ctx       int             `cbor:"ctx,omitempty"`       // context-semantics version (sibling-sources design §3.2)
+	// Test marks a TEST definition (tests design §2): the recipe is
+	// TESTS.jobs (or BuildFile, relative to Dir), its entry is test(), the
+	// pipeline ends in a testrun that records test-passed:<KT> instead of
+	// producing an output. omitempty keeps every build definition — and its
+	// K — byte-identical. An old server strips the unknown field at the
+	// submit canonicality check and rejects the definition loudly.
+	Test bool `cbor:"test,omitempty"`
+}
+
+// RecipeFile returns the effective recipe path relative to Dir: BuildFile
+// when set, else the kind's default — BUILD.jobs for a build, TESTS.jobs for
+// a test.
+func (d Definition) RecipeFile() string {
+	if d.BuildFile != "" {
+		return d.BuildFile
+	}
+	if d.Test {
+		return TestsFile
+	}
+	return BuildFile
 }
 
 // Canonical returns the canonical CBOR of the definition. BuildJobs is an
@@ -93,6 +120,7 @@ func (d Definition) Canonical() ([]byte, error) {
 		BuildJobs: d.BuildJobs,
 		BuildFile: d.BuildFile,
 		Ctx:       d.Ctx,
+		Test:      d.Test,
 	}
 	return canonEnc.Marshal(out)
 }

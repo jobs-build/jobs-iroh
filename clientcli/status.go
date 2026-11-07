@@ -46,14 +46,18 @@ func statusCmd() *cli.Command {
 // ages.
 func writeStatus(w io.Writer, reqs []api.RequestInfo, runners []wire.RunnerInfo, now time.Time) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "REQUEST\tK\tPHASE\tDONE\tRUN\tFAIL\tWAIT\tAGE")
+	fmt.Fprintln(tw, "REQUEST\tKIND\tK\tPHASE\tDONE\tRUN\tFAIL\tWAIT\tAGE")
 	if len(reqs) == 0 {
 		fmt.Fprintln(tw, "(none)")
 	}
 	for _, r := range reqs {
 		cnt := r.Counts
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d/%d\t%d\t%d\t%d\t%s\n",
-			r.RequestID, shortHex(r.K), r.Phase,
+		kind := "build"
+		if r.Test {
+			kind = "test"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d/%d\t%d\t%d\t%d\t%s\n",
+			r.RequestID, kind, shortHex(r.K), r.Phase,
 			cnt.Done, cnt.Total, cnt.Running, cnt.Failed, cnt.Waiting,
 			formatDur(now.Sub(time.Unix(0, r.CreatedNs))))
 	}

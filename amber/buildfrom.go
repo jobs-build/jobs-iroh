@@ -20,6 +20,25 @@ import (
 // new directory + small file objects are emitted; env/ is shared by key,
 // never re-ingested. Deterministic: the same inputs yield a byte-identical F.
 func (s *Store) BuildFromTree(ctx context.Context, env key.Key, dir string, params []byte, platform string, override []byte) (key.Key, error) {
+	return s.buildFromTree(ctx, env, dir, params, platform, "BUILD.jobs", override)
+}
+
+// TestFromTree assembles the build-from tree of a TEST (tests design §4.1):
+// the same {env/, dir?, params, platform} as BuildFromTree plus the
+// effective test recipe ALWAYS spliced as a top-level TESTS.jobs entry. The
+// entry is the mode marker the eval stages branch on, which is why there is
+// no join-preserving omission here: a build F-tree never carries it, so a
+// test's F differs from the build's even for byte-identical recipes.
+func (s *Store) TestFromTree(ctx context.Context, env key.Key, dir string, params []byte, platform string, recipe []byte) (key.Key, error) {
+	if recipe == nil {
+		recipe = []byte{}
+	}
+	return s.buildFromTree(ctx, env, dir, params, platform, "TESTS.jobs", recipe)
+}
+
+// buildFromTree is the shared assembler: recipe (under recipeName) is
+// spliced only when non-nil.
+func (s *Store) buildFromTree(ctx context.Context, env key.Key, dir string, params []byte, platform string, recipeName string, recipe []byte) (key.Key, error) {
 	type ent struct {
 		name string
 		data []byte // nil => directory referenced by subKey
@@ -34,8 +53,8 @@ func (s *Store) BuildFromTree(ctx context.Context, env key.Key, dir string, para
 	if dir != "" {
 		entries = append(entries, ent{name: "dir", data: []byte(dir)})
 	}
-	if override != nil {
-		entries = append(entries, ent{name: "BUILD.jobs", data: override})
+	if recipe != nil {
+		entries = append(entries, ent{name: recipeName, data: recipe})
 	}
 	// DirBuilder requires entries in bytewise name order.
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })

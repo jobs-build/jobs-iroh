@@ -91,6 +91,50 @@ func BuildFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, p 
 	return f, nil
 }
 
+// TestFromSource runs cfg's TESTS.jobs hermetically (tests design §6): the
+// same shell/store setup as BuildFromSource, a test F-tree from
+// localBuildFrom (cfg.Test forced on), and driveTestStages — which builds
+// every input the recipe names (the directory's own build included, when
+// listed) and either memo-hits test-passed:<KT> or runs the test. Returns
+// the test identity F and the run identity KT; a failing test is an error.
+func TestFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, p *Progress) (TestOutcome, error) {
+	cfg.Test = true
+	platform := cfg.Platform
+	if platform == "" {
+		platform = Platform()
+	}
+	shellRef := cfg.ShellRef
+	if shellRef == "" {
+		shellRef = "shell:" + platform
+	}
+	shellKey, ok, err := st.GetKey(ctx, shellRef)
+	if err != nil {
+		return TestOutcome{}, fmt.Errorf("resolve %s: %w", shellRef, err)
+	}
+	if !ok {
+		return TestOutcome{}, fmt.Errorf("shell artifact %q not found (seed missing — restart to re-seed)", shellRef)
+	}
+	brc := BuildRunCfg{Platform: platform, ShellKey: shellKey, CacheDir: cfg.CacheDir}
+
+	bf := p.Start("test-from")
+	f, err := localBuildFrom(ctx, st, brc, cfg)
+	if err != nil {
+		bf(err)
+		return TestOutcome{}, err
+	}
+	bf(nil)
+
+	d := &developDriver{
+		ctx: ctx, st: st, rw: NewLocalRefWriter(st), brc: brc, secrets: cfg.Secrets,
+		visited: map[string]bool{}, inProgress: map[string]bool{},
+	}
+	kt, err := d.driveTestStages(f, p)
+	if err != nil {
+		return TestOutcome{}, err
+	}
+	return TestOutcome{F: f, KT: kt}, nil
+}
+
 // prepareSourceArtifact builds cfg's target hermetically (BuildFromSource) and
 // returns everything `run` and `image` need: the artifact (c/) BOK, the shell,
 // the runtime-closure dep BOKs, and the JOBS.entrypoint. Linux-only: it drives

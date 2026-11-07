@@ -35,7 +35,9 @@ func (e *gateError) Unwrap() error { return e.err }
 //	                          build-cache:<id>:<platform> where <id> is declared
 //	                          in build-pinned:F and <platform> is the build's
 //	                          placement platform
-//	buildvalue             -> nothing, ever (pure orchestrator)
+//	testrun       (key KT)-> test-passed:KT; build-cache:<id>:<platform> under
+//	                          the buildrun rule (declared in build-pinned:KT)
+//	buildvalue, testvalue  -> nothing, ever (pure orchestrators)
 //
 // Every name additionally passes reference.ValidateName; every
 // build-from-tree: suffix must be the canonical lowercase hex of a valid key
@@ -84,7 +86,7 @@ func gateAllowed(kind string, nodeKey key.Key, platform string, refs []wire.RefP
 func checkRefName(kind, K, reportedF, platform string, declared map[string]bool, r wire.RefProposal) error {
 	name := r.Name
 	if strings.HasPrefix(name, "build-cache:") {
-		if kind != wire.KindBuildRun {
+		if kind != wire.KindBuildRun && kind != wire.KindTestRun {
 			return fmt.Errorf("ref %q not permitted for %s|%s", name, kind, K)
 		}
 		id, plat, ok := builddef.ParseCacheRefName(name)
@@ -138,6 +140,8 @@ func checkRefName(kind, K, reportedF, platform string, declared map[string]bool,
 		ok = name == "build-pinned:"+K
 	case wire.KindBuildRun:
 		ok = name == "build-output:"+K || name == "build-output-deps:"+K
+	case wire.KindTestRun:
+		ok = name == "test-passed:"+K
 	}
 	if !ok {
 		return fmt.Errorf("ref %q not permitted for %s|%s", name, kind, K)

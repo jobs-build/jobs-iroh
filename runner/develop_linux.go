@@ -38,6 +38,11 @@ type DevelopConfig struct {
 	ShellRef  string // default "shell:<platform>"
 	CacheDir  string // fetcher artifact cache
 	Secrets   map[string]TagSecret
+	// Test selects the TEST pipeline (tests design §6): the recipe defaults
+	// to TESTS.jobs, F is a test F-tree, and the final stage records
+	// test-passed:<KT> instead of producing an output. Set by
+	// TestFromSource; the build entry points ignore it.
+	Test bool
 }
 
 // developDriver makes a dependency graph present in the local amber store,

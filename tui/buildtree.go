@@ -2,9 +2,11 @@ package tui
 
 // Build-graph folding for the build view (docs/design/2026-08-19-remote-
 // build-tui.md §2): the snapshot's raw scheduler nodes fold into logical
-// rows — one per buildvalue/import — with the buildvalue's stage chain
-// (buildfrom/pluginresolve/pin/buildrun) collapsed into the row's state.
-// Pure functions over api.Snapshot, so every rule is table-testable.
+// rows — one per buildvalue/testvalue/import — with the value's stage chain
+// (buildfrom/pluginresolve/pin/buildrun, or …/testrun for a test) collapsed
+// into the row's state. A testvalue's inputs are its own deps (tests design
+// §5), so they fold as direct children. Pure functions over api.Snapshot,
+// so every rule is table-testable.
 //
 // FoldSnapshot/FlattenTree and their row types are EXPORTED API: external
 // jobs-iroh frontends (jobs-build/assimilate's deploy TUI) fold snapshots
@@ -25,18 +27,20 @@ var stageNames = map[string]string{
 	wire.KindPluginResolve: "resolve",
 	wire.KindPin:           "pin",
 	wire.KindBuildRun:      "build",
+	wire.KindTestRun:       "test",
 	wire.KindImport:        "fetch",
 }
 
-// chainOrder is the buildvalue stage order — folds pick the FIRST match in
-// this order so a verdict is deterministic when several stages qualify.
-var chainOrder = []string{wire.KindBuildFrom, wire.KindPluginResolve, wire.KindPin, wire.KindBuildRun}
+// chainOrder is the value stage order — folds pick the FIRST match in this
+// order so a verdict is deterministic when several stages qualify. A chain
+// holds a buildrun or a testrun, never both.
+var chainOrder = []string{wire.KindBuildFrom, wire.KindPluginResolve, wire.KindPin, wire.KindBuildRun, wire.KindTestRun}
 
-// BuildRow is one logical row: a buildvalue (with its chain folded in) or
-// an import.
+// BuildRow is one logical row: a buildvalue or testvalue (with its chain
+// folded in) or an import.
 type BuildRow struct {
 	Node      string // the row's own node name
-	Kind      string // wire.KindBuildValue | wire.KindImport
+	Kind      string // wire.KindBuildValue | wire.KindTestValue | wire.KindImport
 	Label     string
 	Phase     string // folded wire phase
 	Stage     string // active/failed stage name (eval|resolve|pin|build|fetch)
@@ -84,7 +88,7 @@ func FoldSnapshot(snap api.Snapshot) *BuildGraph {
 		return kind
 	}
 	logical := func(kind string) bool {
-		return kind == wire.KindBuildValue || kind == wire.KindImport
+		return kind == wire.KindBuildValue || kind == wire.KindTestValue || kind == wire.KindImport
 	}
 
 	g := &BuildGraph{Rows: map[string]*BuildRow{}}
@@ -145,11 +149,15 @@ func FoldSnapshot(snap api.Snapshot) *BuildGraph {
 // (design §2 precedence: chain failure → own verdict → running → queued →
 // done → waiting).
 func foldChain(row *BuildRow, own api.NodeSnap, chain map[string]api.NodeSnap) {
+	// The run stage: a buildvalue's buildrun, a testvalue's testrun.
 	br, hasBR := chain[wire.KindBuildRun]
+	if !hasBR {
+		br, hasBR = chain[wire.KindTestRun]
+	}
 
 	// The output pane's target, best available: failed stage → active stage
-	// → the buildrun (stored logs of the run). Falls out of the fold below
-	// for the verdict rows; done/waiting rows default to the buildrun.
+	// → the run stage (stored logs of the run). Falls out of the fold below
+	// for the verdict rows; done/waiting rows default to the run stage.
 	if hasBR {
 		row.LogNode = br.Node
 	}
@@ -296,4 +304,17 @@ func FlattenTree(g *BuildGraph, exp map[string]bool) []TreeRow {
 		walk(r, "", 0)
 	}
 	return out
+}
+
+// RequestKind names what a snapshot's request is for display: "test" when
+// its closure holds a testvalue (a test request's target; a build never
+// depends on one), else "build". Old servers and empty snapshots read as
+// builds.
+func RequestKind(snap api.Snapshot) string {
+	for _, n := range snap.Nodes {
+		if strings.HasPrefix(n.Node, wire.KindTestValue+"_") {
+			return "test"
+		}
+	}
+	return "build"
 }

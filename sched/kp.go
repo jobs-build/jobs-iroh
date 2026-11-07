@@ -17,6 +17,7 @@ import (
 // names).
 func KPTreeRef(kp key.Key) string  { return cover.KPTreeRef(kp) }
 func PinCoverRef(f key.Key) string { return cover.PinCoverRef(f) }
+func KTTreeRef(kt key.Key) string  { return cover.KTTreeRef(kt) }
 
 // deriveKP computes and durably records the KP binding for a pinned F: read
 // build-pinned:F, derive KP via the shared cover.Derive (the SAME
@@ -87,21 +88,89 @@ func (s *Sched) resolveKPLocked(f key.Key) (key.Key, error) {
 	return s.deriveKP(f)
 }
 
-// waiterFs collects the resolved F keys of the buildvalues depending on a
-// KP-keyed buildrun (FailureRecord.ForF — the KP→F human bridge). Empty for
-// every other node kind. Caller holds s.mu.
+// waiterFs collects the resolved F keys of the buildvalues (testvalues)
+// depending on a KP-keyed buildrun (KT-keyed testrun) — FailureRecord.ForF,
+// the KP→F / KT→F human bridge. Empty for every other node kind. Caller
+// holds s.mu.
 func waiterFs(n *node) []string {
-	if n.id.kind != wire.KindBuildRun {
+	if n.id.kind != wire.KindBuildRun && n.id.kind != wire.KindTestRun {
 		return nil
 	}
 	var out []string
 	for d := range n.dependents {
-		if d.id.kind == wire.KindBuildValue && d.fResolved {
+		if orchestrator(d.id.kind) && d.fResolved {
 			out = append(out, d.f.String())
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// deriveKT computes and durably records the test-run key for the pinned
+// test at KP (tests design §4.2, §5): resolve every pinned input to content
+// (the caller has verified they are all done), derive KT via the shared
+// cover.DeriveTest — the SAME implementation the local pipeline uses —
+// then write build-pinned:<KT> (the alias unfold, the gate's cache check,
+// and the testrun runner read) and kt-tree/<KT> (the pull carrier). Pure
+// store computation, idempotent; re-run on every testvalue advance that
+// still lacks the binding, which is the crash heal.
+func (s *Sched) deriveKT(kp key.Key) (key.Key, error) {
+	pinnedKey, ok, err := s.store.GetKey(s.ctx, "build-pinned:"+kp.String())
+	if err != nil {
+		return key.Key{}, err
+	}
+	if !ok {
+		return key.Key{}, fmt.Errorf("build-pinned:%s not found", kp.String())
+	}
+	pinnedBytes, err := s.store.ReadFile(s.ctx, pinnedKey)
+	if err != nil {
+		return key.Key{}, fmt.Errorf("read pinned blob: %w", err)
+	}
+	pinned, err := builddef.DecodePinned(pinnedBytes)
+	if err != nil {
+		return key.Key{}, fmt.Errorf("decode pinned: %w", err)
+	}
+	platKey, ok, err := s.store.TreeSubdir(s.ctx, kp, "platform")
+	if err != nil || !ok {
+		return key.Key{}, fmt.Errorf("KP-tree platform entry: ok=%v err=%w", ok, err)
+	}
+	platform, err := s.store.ReadFile(s.ctx, platKey)
+	if err != nil {
+		return key.Key{}, fmt.Errorf("read KP-tree platform: %w", err)
+	}
+	resolved, err := cover.ResolveInputs(s.ctx, s.store, pinned.Inputs)
+	if err != nil {
+		return key.Key{}, err
+	}
+	kt, err := cover.DeriveTest(s.ctx, s.store, kp, pinned, string(platform), resolved)
+	if err != nil {
+		return key.Key{}, fmt.Errorf("cover.DeriveTest: %w", err)
+	}
+	if err := s.store.PutRef(s.ctx, "build-pinned:"+kt.String(), pinnedKey); err != nil {
+		return key.Key{}, err
+	}
+	if err := s.store.PutRef(s.ctx, KTTreeRef(kt), kt); err != nil {
+		return key.Key{}, err
+	}
+	return kt, nil
+}
+
+// ensureTestAliasLocked republishes a done testrun's memo under the test's
+// F name (test-passed:F → KT): the testvalue doneness fast-path and the
+// client's pull-home read it. Idempotent; runs BEFORE nodeDoneLocked(tv)
+// so a terminal snapshot implies the alias is durable.
+func (s *Sched) ensureTestAliasLocked(f, kt key.Key) error {
+	if _, ok, err := s.store.GetKey(s.ctx, cover.TestPassedRef(f)); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	if _, ok, err := s.store.GetKey(s.ctx, cover.TestPassedRef(kt)); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("%s missing for done testrun", cover.TestPassedRef(kt))
+	}
+	return s.store.PutRef(s.ctx, cover.TestPassedRef(f), kt)
 }
 
 // ensureFAliasesLocked republishes buildrun's KP-keyed output refs under

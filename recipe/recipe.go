@@ -2,6 +2,7 @@ package recipe
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/amber-store/core/key"
 	"github.com/jobs-build/jobs-iroh/builddef"
@@ -38,6 +39,11 @@ type EvalConfig struct {
 	// design §3.2): name → file access + the fixed in-plugin-sandbox path.
 	// nil on the plugins() stage and for dep-less builds.
 	Deps map[string]DepSource
+	// Test selects test-recipe mode (tests design §3): the predeclared
+	// `build` Input (this directory's build) is available at BOTH stages —
+	// Starlark resolves names at compile time, so plugins() of a TESTS.jobs
+	// needs it too — and EvalTest calls test() instead of build().
+	Test bool
 }
 
 // newThread returns a hermetic Starlark thread: print is captured (no stdout),
@@ -62,7 +68,7 @@ func (cfg EvalConfig) basePredeclared() (starlark.StringDict, error) {
 	if err != nil {
 		return nil, fmt.Errorf("params to starlark: %w", err)
 	}
-	return starlark.StringDict{
+	pre := starlark.StringDict{
 		"platform": starlark.String(cfg.Platform),
 		"params":   pv,
 		"source":   sourceValue{src: cfg.Source},
@@ -76,7 +82,15 @@ func (cfg EvalConfig) basePredeclared() (starlark.StringDict, error) {
 		// that errors on use — deps are declared there, consumed by build().
 		// EvalBuild re-sets it to the live depsMapping.
 		"deps": depsUnavailable{},
-	}, nil
+	}
+	if cfg.Test {
+		b, err := cfg.selfBuildInput()
+		if err != nil {
+			return nil, fmt.Errorf("test recipe build input: %w", err)
+		}
+		pre["build"] = b
+	}
+	return pre, nil
 }
 
 // execRecipe runs the recipe file and returns its module globals.
@@ -94,11 +108,20 @@ func execRecipe(thread *starlark.Thread, recipeSrc []byte, pre starlark.StringDi
 // the recipe's plugin-declaration function. This allows a BUILD.jobs to contain
 // both `def plugins():` (for the plugin-resolve stage) and `def build():` (for
 // the pin stage) without naming conflicts. See build.md §3.1, §7.
-func execRecipeForBuild(thread *starlark.Thread, recipeSrc []byte, pre starlark.StringDict) (starlark.StringDict, error) {
+func execRecipeForBuild(thread *starlark.Thread, recipeSrc []byte, pre starlark.StringDict, test bool) (starlark.StringDict, error) {
 	opts := syntax.LegacyFileOptions()
-	f, err := opts.Parse("BUILD.jobs", recipeSrc, 0)
+	name := builddef.BuildFile
+	if test {
+		name = builddef.TestsFile
+	}
+	f, err := opts.Parse(name, recipeSrc, 0)
 	if err != nil {
 		return nil, err
+	}
+	if test {
+		if err := rejectBuildDef(f); err != nil {
+			return nil, err
+		}
 	}
 	// Filter out any top-level `def plugins():` statement so that the predeclared
 	// `plugins` mapping (live callers) is resolved from predeclared rather than
@@ -249,6 +272,10 @@ type BuildResult struct {
 	// (multi-job-runner design); nil when the recipe omits `resources`. Baked
 	// into Pinned.Resources at pin time (F-deterministic; not part of identity).
 	Resources *builddef.PinnedResources
+	// TimeoutSec is test()'s optional wall-clock limit in whole seconds
+	// (tests design §6.1); 0 when omitted (the runner's default applies).
+	// build() rejects the field. Baked into Pinned.TimeoutSec; not identity.
+	TimeoutSec int64
 	// Name is the optional recipe-declared human-readable build name, surfaced
 	// in the jobs-console dashboard. Display metadata ONLY: it is never written
 	// into Pinned and never affects F/identity or dedup.
@@ -308,6 +335,12 @@ func (r BuildResult) Validate() error {
 // AST before compilation, preventing the recipe's plugin-declaration function
 // from shadowing the injected live `plugins` mapping (build.md §3.1, §7).
 func EvalBuild(cfg EvalConfig, recipeSrc []byte, plugins map[string]PluginSpec) (BuildResult, error) {
+	return evalEntry(cfg, recipeSrc, plugins, "build")
+}
+
+// evalEntry is the shared build()/test() evaluation (EvalBuild, EvalTest):
+// entry names the recipe function to call.
+func evalEntry(cfg EvalConfig, recipeSrc []byte, plugins map[string]PluginSpec, entry string) (BuildResult, error) {
 	thread := newThread()
 	pre, err := cfg.basePredeclared()
 	if err != nil {
@@ -323,19 +356,19 @@ func EvalBuild(cfg EvalConfig, recipeSrc []byte, plugins map[string]PluginSpec) 
 	pre["plugins"] = pluginsMapping{specs: plugins, platform: cfg.Platform, seeds: seeds}
 	pre["deps"] = depsMapping{deps: cfg.Deps}
 
-	globals, err := execRecipeForBuild(thread, recipeSrc, pre)
+	globals, err := execRecipeForBuild(thread, recipeSrc, pre, cfg.Test)
 	if err != nil {
 		return BuildResult{}, err
 	}
-	fn, ok := globals["build"]
+	fn, ok := globals[entry]
 	if !ok {
-		return BuildResult{}, fmt.Errorf("recipe defines no build() function")
+		return BuildResult{}, fmt.Errorf("recipe defines no %s() function", entry)
 	}
 	res, err := starlark.Call(thread, fn, nil, nil)
 	if err != nil {
 		return BuildResult{}, err
 	}
-	out, err := decodeBuildResult(res)
+	out, err := decodeBuildResult(res, entry)
 	if err != nil {
 		return BuildResult{}, err
 	}
@@ -368,13 +401,13 @@ func EvalBuild(cfg EvalConfig, recipeSrc []byte, plugins map[string]PluginSpec) 
 	// sources_allow_escaping ride with either a widened context or a closure.
 	widened := cfg.ContextKey != (key.Key{})
 	if len(out.Closure) > 0 && len(out.Sources) > 0 {
-		return BuildResult{}, fmt.Errorf("build() declares both closure and sources — closure is a complete cover; drop sources")
+		return BuildResult{}, fmt.Errorf("%s() declares both closure and sources — closure is a complete cover; drop sources", entry)
 	}
 	if len(out.Sources) > 0 && !widened {
-		return BuildResult{}, fmt.Errorf("build() declares sources/generated but this build has no widened context (submit from a repo root, or drop the declarations)")
+		return BuildResult{}, fmt.Errorf("%s() declares sources/generated but this build has no widened context (submit from a repo root, or drop the declarations)", entry)
 	}
 	if (len(out.Generated) > 0 || len(out.AllowEscaping) > 0) && !widened && len(out.Closure) == 0 {
-		return BuildResult{}, fmt.Errorf("build() declares generated/sources_allow_escaping but this build has neither a widened context nor a closure")
+		return BuildResult{}, fmt.Errorf("%s() declares generated/sources_allow_escaping but this build has neither a widened context nor a closure", entry)
 	}
 	if len(out.Sources) > 0 || len(out.Generated) > 0 || len(out.AllowEscaping) > 0 || len(out.Closure) > 0 {
 		if err := normalizeBuildSources(&out, cfg.Dir); err != nil {
@@ -384,16 +417,19 @@ func EvalBuild(cfg EvalConfig, recipeSrc []byte, plugins map[string]PluginSpec) 
 	return out, nil
 }
 
-// decodeBuildResult accepts a *starlarkstruct.Struct or a 4-tuple.
-func decodeBuildResult(v starlark.Value) (BuildResult, error) {
-	var inputsV, envV, scriptV, rtV, cachesV, resourcesV, nameV starlark.Value
+// decodeBuildResult accepts a *starlarkstruct.Struct or (build() only) a
+// 4-tuple. entry is "build" or "test": a test() result has no runtime_deps
+// (an error if present — tests ship no output), and only the struct form.
+func decodeBuildResult(v starlark.Value, entry string) (BuildResult, error) {
+	var inputsV, envV, scriptV, rtV, cachesV, resourcesV, timeoutV, nameV starlark.Value
 	var sourcesV, closureV, generatedV, allowEscV starlark.Value
+	test := entry == "test"
 	switch t := v.(type) {
 	case *starlarkstruct.Struct:
 		get := func(field string) (starlark.Value, error) {
 			val, err := t.Attr(field)
 			if err != nil {
-				return nil, fmt.Errorf("build() result missing %q", field)
+				return nil, fmt.Errorf("%s() result missing %q", entry, field)
 			}
 			return val, nil
 		}
@@ -407,7 +443,11 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 		if scriptV, err = get("script"); err != nil {
 			return BuildResult{}, err
 		}
-		if rtV, err = get("runtime_deps"); err != nil {
+		if test {
+			if _, rerr := t.Attr("runtime_deps"); rerr == nil {
+				return BuildResult{}, fmt.Errorf("test() must not declare runtime_deps — a test has no output to ship a runtime closure with")
+			}
+		} else if rtV, err = get("runtime_deps"); err != nil {
 			return BuildResult{}, err
 		}
 		// caches is OPTIONAL (build-cache design §3); struct form only — the
@@ -419,6 +459,15 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 		// resources is OPTIONAL (multi-job-runner design); struct form only.
 		if rv, rerr := t.Attr("resources"); rerr == nil {
 			resourcesV = rv
+		}
+		// timeout is OPTIONAL and test()-only (tests design §6.1). build()
+		// rejects it outright: a limit the author wrote and the runner would
+		// silently ignore is worse than no field.
+		if tv, terr := t.Attr("timeout"); terr == nil {
+			if !test {
+				return BuildResult{}, fmt.Errorf("build() must not declare timeout — only test() runs are time-limited")
+			}
+			timeoutV = tv
 		}
 		// name is OPTIONAL (display-only build name); struct form only. A
 		// missing attr returns an error from t.Attr, meaning "absent".
@@ -441,49 +490,65 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 			allowEscV = av
 		}
 	case starlark.Tuple:
+		if test {
+			return BuildResult{}, fmt.Errorf("test() must return a struct, got a tuple")
+		}
 		if t.Len() != 4 {
 			return BuildResult{}, fmt.Errorf("build() tuple must have 4 elements, got %d", t.Len())
 		}
 		inputsV, envV, scriptV, rtV = t.Index(0), t.Index(1), t.Index(2), t.Index(3)
 	default:
+		if test {
+			return BuildResult{}, fmt.Errorf("test() must return a struct, got %s", v.Type())
+		}
 		return BuildResult{}, fmt.Errorf("build() must return a struct or 4-tuple, got %s", v.Type())
 	}
 
 	inputs, err := inputMapValue(inputsV)
 	if err != nil {
-		return BuildResult{}, fmt.Errorf("build() inputs: %w", err)
+		return BuildResult{}, fmt.Errorf("%s() inputs: %w", entry, err)
 	}
-	rtDeps, err := inputListValue(rtV)
-	if err != nil {
-		return BuildResult{}, fmt.Errorf("build() runtime_deps: %w", err)
+	var rtDeps []builddef.Input
+	if rtV != nil {
+		rtDeps, err = inputListValue(rtV)
+		if err != nil {
+			return BuildResult{}, fmt.Errorf("build() runtime_deps: %w", err)
+		}
 	}
 	env, err := stringMap(envV)
 	if err != nil {
-		return BuildResult{}, fmt.Errorf("build() env: %w", err)
+		return BuildResult{}, fmt.Errorf("%s() env: %w", entry, err)
 	}
 	script, ok := starlark.AsString(scriptV)
 	if !ok {
-		return BuildResult{}, fmt.Errorf("build() script must be a string, got %s", scriptV.Type())
+		return BuildResult{}, fmt.Errorf("%s() script must be a string, got %s", entry, scriptV.Type())
 	}
 	var caches []builddef.PinnedCache
 	if cachesV != nil {
 		caches, err = cacheMapValue(cachesV)
 		if err != nil {
-			return BuildResult{}, fmt.Errorf("build() caches: %w", err)
+			return BuildResult{}, fmt.Errorf("%s() caches: %w", entry, err)
 		}
 	}
 	var res *builddef.PinnedResources
 	if resourcesV != nil {
 		res, err = decodeResources(resourcesV)
 		if err != nil {
-			return BuildResult{}, fmt.Errorf("build() resources: %w", err)
+			return BuildResult{}, fmt.Errorf("%s() resources: %w", entry, err)
+		}
+	}
+	var timeoutSec int64
+	if timeoutV != nil {
+		timeoutSec, err = decodeTimeout(timeoutV)
+		if err != nil {
+			return BuildResult{}, fmt.Errorf("%s() timeout: %w", entry, err)
 		}
 	}
 	var name string
 	if nameV != nil {
 		s, ok := starlark.AsString(nameV)
 		if !ok {
-			return BuildResult{}, fmt.Errorf("build() name must be a string, got %s", nameV.Type())
+			return BuildResult{}, fmt.Errorf("%s() name must be a string, got %s", entry, nameV.Type())
 		}
 		name = s
 	}
@@ -491,25 +556,25 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 	var generated map[string][]byte
 	if sourcesV != nil {
 		if sources, err = decodeSources(sourcesV); err != nil {
-			return BuildResult{}, fmt.Errorf("build() sources: %w", err)
+			return BuildResult{}, fmt.Errorf("%s() sources: %w", entry, err)
 		}
 	}
 	if closureV != nil {
 		if closure, err = decodeSources(closureV); err != nil {
-			return BuildResult{}, fmt.Errorf("build() closure: %w", err)
+			return BuildResult{}, fmt.Errorf("%s() closure: %w", entry, err)
 		}
 	}
 	if allowEscV != nil {
 		if allowEsc, err = decodeSources(allowEscV); err != nil {
-			return BuildResult{}, fmt.Errorf("build() sources_allow_escaping: %w", err)
+			return BuildResult{}, fmt.Errorf("%s() sources_allow_escaping: %w", entry, err)
 		}
 	}
 	if generatedV != nil {
 		if generated, err = decodeGenerated(generatedV); err != nil {
-			return BuildResult{}, fmt.Errorf("build() generated: %w", err)
+			return BuildResult{}, fmt.Errorf("%s() generated: %w", entry, err)
 		}
 	}
-	return BuildResult{Inputs: inputs, Env: env, Script: script, RuntimeDeps: rtDeps, Caches: caches, Resources: res, Name: name,
+	return BuildResult{Inputs: inputs, Env: env, Script: script, RuntimeDeps: rtDeps, Caches: caches, Resources: res, TimeoutSec: timeoutSec, Name: name,
 		Sources: sources, Closure: closure, Generated: generated, AllowEscaping: allowEsc}, nil
 }
 
@@ -547,6 +612,28 @@ func decodeResources(v starlark.Value) (*builddef.PinnedResources, error) {
 	return out, nil
 }
 
+// decodeTimeout reads test()'s `timeout` — a Go duration string such as
+// "90s" or "10m" — into whole seconds. Zero, negative and sub-second values
+// are rejected: a test that must finish in no time is a recipe bug, and the
+// omitted field already means "the runner's default".
+func decodeTimeout(v starlark.Value) (int64, error) {
+	s, ok := starlark.AsString(v)
+	if !ok {
+		return 0, fmt.Errorf("must be a duration string such as \"10m\", got %s", v.Type())
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d < time.Second {
+		return 0, fmt.Errorf("%q: must be at least 1s", s)
+	}
+	if d%time.Second != 0 {
+		return 0, fmt.Errorf("%q: must be a whole number of seconds", s)
+	}
+	return int64(d / time.Second), nil
+}
+
 // inputMapValue converts build()'s `inputs` — a Starlark dict {name: Input} — to
 // []NamedInput. Keys must be non-empty strings (the JOBS_DEPS lookup keys);
 // values must be Inputs. The dict guarantees name uniqueness.
@@ -563,6 +650,9 @@ func inputMapValue(v starlark.Value) ([]NamedInput, error) {
 		}
 		if name == "" {
 			return nil, fmt.Errorf("input name must be non-empty")
+		}
+		if _, unavailable := item[1].(buildUnavailable); unavailable {
+			return nil, fmt.Errorf("input %q: build is unavailable in this evaluation (no source content key)", name)
 		}
 		in, ok := item[1].(*Input)
 		if !ok {

@@ -22,7 +22,7 @@ images). One server endpoint, five ALPNs:
 | ALPN | Who | What |
 |---|---|---|
 | `jobs-build/1.0` | client | submit builds, watch, logs, cancel |
-| `jobs-runner-nats/3.0` | runner | NATS tunnel to the embedded scheduler |
+| `jobs-runner-nats/4.0` | runner | NATS tunnel to the embedded scheduler |
 | `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
 | `jobs-admin/1.0` | client (TUI) | observe builds, stats, fleet, refs, cancel/delete, diagnose |
 | `jobs-amber-admin/1.0` | client / registry | push source trees up, pull outputs home |
@@ -48,6 +48,33 @@ a sandbox with its inputs mounted read-only, the source at `$SRC`, and the
 output tree collected from `$out`. Language plugins (Go, npm, PyPI, cargo,
 RubyGems, …) expand lockfiles into per-dependency cached imports.
 
+## A test file
+
+Tests live in a `TESTS.jobs` next to `BUILD.jobs` and define `test()` — the
+same struct as `build()` without `runtime_deps`. The predeclared `build` is
+the directory's own build, so a test can run against the real artifact:
+
+```python
+def test():
+    toolchain = imp(fetcher = "tarball+https",
+                    params = {"url": "https://go.dev/dl/go1.24.linux-amd64.tar.gz"})
+    return struct(
+        inputs  = {"app": build, "toolchain": toolchain},
+        env     = {},
+        script  = '"$(jq -r .app <<<"$JOBS_DEPS")/app" --version && go test ./...',
+        closure = ["//cmd", "//internal", "//go.mod", "//go.sum"],
+        timeout = "10m",   # optional, default 5m
+    )
+```
+
+A test produces no output; exit 0 records a pass, and a run still going
+after `timeout` (Go duration syntax, default 5 minutes) is killed and
+fails. The record is keyed by
+what the sandbox actually sees — script, environment, covered sources,
+platform, and every input's *content* — so a commit that leaves the build
+output and the covered sources unchanged does not re-run the tests, while
+a failed test re-runs on the next submit.
+
 ## Quickstart: local build
 
 No server needed — builds run hermetically against an embedded store under
@@ -57,6 +84,7 @@ No server needed — builds run hermetically against an embedded store under
 cd myapp                                            # or any subdirectory of it
 jobs-client build                                   # build → prints F + output key
 jobs-client run -- arg1                             # build, then exec JOBS.entrypoint
+jobs-client test                                    # run TESTS.jobs (memoized by what it saw)
 jobs-client develop                                 # interactive shell in the build sandbox
 jobs-client image -o app.tar --tag myapp:dev
 docker load -i app.tar
@@ -88,6 +116,7 @@ jobs-runner --server <endpoint-id> [--addr host:port] [--size c1-m2]
 # 3. Client: push source, build remotely, pull the output home
 #    (--source omitted → resolved from the cwd, exactly as for local builds):
 cd myapp && jobs-client remote-build --server <endpoint-id>
+jobs-client remote-test --server <endpoint-id>                # run TESTS.jobs there
 jobs-client watch  --server <endpoint-id> --request-id <id>   # re-attach
 jobs-client status --server <endpoint-id>                     # one-shot tables
 jobs-client tui    --server <endpoint-id>                     # interactive admin

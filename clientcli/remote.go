@@ -20,6 +20,7 @@ import (
 	"github.com/jobs-build/jobs-iroh/amberclient"
 	"github.com/jobs-build/jobs-iroh/api"
 	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/cover"
 	"github.com/jobs-build/jobs-iroh/runner"
 	"github.com/jobs-build/jobs-iroh/tui"
 	"github.com/jobs-build/jobs-iroh/wire"
@@ -33,6 +34,13 @@ import (
 // recipe override and the same params file, so the remote F equals the F a
 // local build of the same source computes (the cache-join invariant).
 func treeDefinition(sourceKey key.Key, dir, buildFile, platform string, params []byte) (canon []byte, k key.Key, err error) {
+	return definitionFor(sourceKey, dir, buildFile, platform, params, false)
+}
+
+// definitionFor is treeDefinition with the kind explicit: test selects a
+// TEST definition (tests design §2) — same tree, dir, params and platform,
+// the recipe defaulting to TESTS.jobs, the pipeline ending in a testrun.
+func definitionFor(sourceKey key.Key, dir, buildFile, platform string, params []byte, test bool) (canon []byte, k key.Key, err error) {
 	in, err := builddef.TreeInput(sourceKey)
 	if err != nil {
 		return nil, key.Key{}, err
@@ -51,6 +59,7 @@ func treeDefinition(sourceKey key.Key, dir, buildFile, platform string, params [
 		Params:    params,
 		BuildFile: buildFile,
 		Ctx:       ctxv,
+		Test:      test,
 	}
 	canon, err = def.Canonical()
 	if err != nil {
@@ -77,6 +86,30 @@ type remoteConfig struct {
 	cpu        string
 	memory     string
 	conns      int
+	// test selects remote-test (tests design §8): a test definition, the
+	// TESTS.jobs search default, and the test-passed pull-home instead of
+	// the output pull.
+	test bool
+}
+
+// what names the request kind in messages: "build" or "test".
+func (cfg *remoteConfig) what() string {
+	if cfg.test {
+		return "test"
+	}
+	return "build"
+}
+
+// recipeName is the effective recipe file (relative to dir) the context
+// search probes for and the definition carries by default.
+func (cfg *remoteConfig) recipeName() string {
+	if cfg.buildFile != "" {
+		return cfg.buildFile
+	}
+	if cfg.test {
+		return builddef.TestsFile
+	}
+	return builddef.BuildFile
 }
 
 // targetLabel is the display name sent with the submit: the resolved
@@ -92,26 +125,49 @@ func (cfg *remoteConfig) targetLabel() string {
 func remoteBuildCmd() *cli.Command {
 	cfg := &remoteConfig{}
 	return &cli.Command{
-		Name:  "remote-build",
-		Usage: "push a source tree to a jobs-server, build it there, pull the output home",
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "server", Required: true, EnvVars: []string{"JOBS_SERVER"}, Usage: "endpoint ID of the jobs-server", Destination: &cfg.server},
-			&cli.StringSliceFlag{Name: "addr", EnvVars: []string{"JOBS_SERVER_ADDR"}, Usage: "direct server address host:port (repeatable; skips discovery and relays)"},
-			&cli.StringFlag{Name: "data-dir", EnvVars: []string{"JOBS_DATA_DIR"}, Value: defaultDataDir(), Usage: "client data directory (embedded store + cache)", Destination: &cfg.dataDir},
-			&cli.StringFlag{Name: "source", Usage: "source directory to ingest and push as the build source (default: the nearest ancestor of the current directory holding BUILD.jobs, searched up to the repo root)", Destination: &cfg.source},
-			&cli.StringFlag{Name: "dir", Usage: "build root within the source (where BUILD.jobs lives)", Destination: &cfg.dir},
-			&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
-			&cli.BoolFlag{Name: "no-repo-root", Usage: "disable the git-root context default (ingest --source itself)", Destination: &cfg.noRepoRoot},
-			&cli.StringFlag{Name: "build-file", Usage: "recipe path relative to dir (default BUILD.jobs)", Destination: &cfg.buildFile},
-			&cli.StringFlag{Name: "platform", EnvVars: []string{"JOBS_PLATFORM"}, Value: runner.Platform(), Usage: "target platform, e.g. linux/amd64", Destination: &cfg.platform},
-			&cli.StringSliceFlag{Name: "param", Usage: "key=value build param (repeatable)"},
-			&cli.StringFlag{Name: "cpu", Usage: "raise the target build's CPU requirement (e.g. 2000m)", Destination: &cfg.cpu},
-			&cli.StringFlag{Name: "memory", Usage: "raise the target build's memory requirement (e.g. 4Gi)", Destination: &cfg.memory},
-			&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running build steps (classic view only)"},
-			&cli.BoolFlag{Name: "no-tui", Usage: "disable the full-screen build view; use the classic progress block"},
-			&cli.IntFlag{Name: "conns", Value: 4, Usage: "parallel connections for the push/pull transfers (1-16; 1 disables sharding)", Destination: &cfg.conns},
-		},
+		Name:   "remote-build",
+		Usage:  "push a source tree to a jobs-server, build it there, pull the output home",
+		Flags:  cfg.flags(),
 		Action: cfg.run,
+	}
+}
+
+// remoteTestCmd is remote-build for TESTS.jobs (tests design §8): push,
+// submit the test definition, watch, and pull the test-passed marker home.
+func remoteTestCmd() *cli.Command {
+	cfg := &remoteConfig{test: true}
+	return &cli.Command{
+		Name:   "remote-test",
+		Usage:  "push a source tree to a jobs-server and run its TESTS.jobs there",
+		Flags:  cfg.flags(),
+		Action: cfg.run,
+	}
+}
+
+// flags is the shared remote flag set; the recipe flag and the wording
+// follow the kind (--build-file/BUILD.jobs vs --test-file/TESTS.jobs).
+func (cfg *remoteConfig) flags() []cli.Flag {
+	what, recipe := cfg.what(), cfg.recipeName()
+	recipeFlag := &cli.StringFlag{Name: "build-file", Usage: "recipe path relative to dir (default BUILD.jobs)", Destination: &cfg.buildFile}
+	if cfg.test {
+		recipeFlag = &cli.StringFlag{Name: "test-file", Usage: "test recipe path relative to dir (default TESTS.jobs)", Destination: &cfg.buildFile}
+	}
+	return []cli.Flag{
+		&cli.StringFlag{Name: "server", Required: true, EnvVars: []string{"JOBS_SERVER"}, Usage: "endpoint ID of the jobs-server", Destination: &cfg.server},
+		&cli.StringSliceFlag{Name: "addr", EnvVars: []string{"JOBS_SERVER_ADDR"}, Usage: "direct server address host:port (repeatable; skips discovery and relays)"},
+		&cli.StringFlag{Name: "data-dir", EnvVars: []string{"JOBS_DATA_DIR"}, Value: defaultDataDir(), Usage: "client data directory (embedded store + cache)", Destination: &cfg.dataDir},
+		&cli.StringFlag{Name: "source", Usage: "source directory to ingest and push as the " + what + " source (default: the nearest ancestor of the current directory holding " + recipe + ", searched up to the repo root)", Destination: &cfg.source},
+		&cli.StringFlag{Name: "dir", Usage: what + " root within the source (where " + recipe + " lives)", Destination: &cfg.dir},
+		&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
+		&cli.BoolFlag{Name: "no-repo-root", Usage: "disable the git-root context default (ingest --source itself)", Destination: &cfg.noRepoRoot},
+		recipeFlag,
+		&cli.StringFlag{Name: "platform", EnvVars: []string{"JOBS_PLATFORM"}, Value: runner.Platform(), Usage: "target platform, e.g. linux/amd64", Destination: &cfg.platform},
+		&cli.StringSliceFlag{Name: "param", Usage: "key=value " + what + " param (repeatable)"},
+		&cli.StringFlag{Name: "cpu", Usage: "raise the target " + what + "'s CPU requirement (e.g. 2000m)", Destination: &cfg.cpu},
+		&cli.StringFlag{Name: "memory", Usage: "raise the target " + what + "'s memory requirement (e.g. 4Gi)", Destination: &cfg.memory},
+		&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running steps (classic view only)"},
+		&cli.BoolFlag{Name: "no-tui", Usage: "disable the full-screen " + what + " view; use the classic progress block"},
+		&cli.IntFlag{Name: "conns", Value: 4, Usage: "parallel connections for the push/pull transfers (1-16; 1 disables sharding)", Destination: &cfg.conns},
 	}
 }
 
@@ -145,17 +201,17 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	// Same two calls in the same order as the local path (localConfig
 	// .resolveContext) — divergence would silently kill the local↔remote F
 	// join.
-	if root, rdir, rerr := resolveSource(cfg.source, cfg.dir, cfg.sourceRoot, cfg.buildFile, cfg.noRepoRoot); rerr != nil {
+	if root, rdir, rerr := resolveSource(cfg.source, cfg.dir, cfg.sourceRoot, cfg.recipeName(), cfg.noRepoRoot); rerr != nil {
 		return rerr
 	} else {
 		cfg.source, cfg.dir = root, rdir
 	}
-	lv.Println(contextLine(cfg.source, cfg.dir, cfg.buildFile))
+	lv.Println(contextLine(cfg.source, cfg.dir, cfg.recipeName()))
 	sourceKey, err := cs.Store.IngestSourceDir(ctx, cfg.source)
 	if err != nil {
 		return fmt.Errorf("ingest source %s: %w", cfg.source, err)
 	}
-	canon, k, err := treeDefinition(sourceKey, cfg.dir, cfg.buildFile, cfg.platform, params)
+	canon, k, err := definitionFor(sourceKey, cfg.dir, cfg.buildFile, cfg.platform, params, cfg.test)
 	if err != nil {
 		return err
 	}
@@ -203,7 +259,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	lv.Println(fmt.Sprintf("submitted request %s (build %s)", sub.RequestID, k))
+	lv.Println(fmt.Sprintf("submitted request %s (%s %s)", sub.RequestID, cfg.what(), k))
 
 	// Full-screen build view on an interactive terminal (the view owns
 	// ctrl-c: confirm-cancel; q detaches). Falls through to the classic
@@ -229,7 +285,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 			return
 		}
 		signal.Stop(sig)
-		lv.Println("interrupt: cancelling build")
+		lv.Println("interrupt: cancelling " + cfg.what())
 		cctx, cdone := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cdone()
 		if err := bc.call(cctx, api.TCancel, api.CancelRequest{RequestID: sub.RequestID}, api.TOK, nil); err != nil {
@@ -246,7 +302,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	final, err := streamWatch(ctx, bc, sub.RequestID, lv, tracker)
 	if err != nil {
 		if ctx.Err() != nil {
-			return cli.Exit("build cancelled", 130)
+			return cli.Exit(cfg.what()+" cancelled", 130)
 		}
 		return err
 	}
@@ -259,11 +315,11 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 		fmt.Fprintf(ew, "re-attach: jobs-client watch --server %s --request-id %s\n", cfg.server, sub.RequestID)
 		fmt.Fprintf(ew, "full failure report (all attempts, durable): jobs-client diagnose --server %s --request %s\n", cfg.server, sub.RequestID)
 		if s := failureSummary(final); s != "" {
-			return cli.Exit("build FAILED: "+s, 1)
+			return cli.Exit(cfg.what()+" FAILED: "+s, 1)
 		}
-		return cli.Exit(fmt.Sprintf("build FAILED (request %s)", sub.RequestID), 1)
+		return cli.Exit(fmt.Sprintf("%s FAILED (request %s)", cfg.what(), sub.RequestID), 1)
 	default: // cancelled
-		return cli.Exit("build cancelled", 130)
+		return cli.Exit(cfg.what()+" cancelled", 130)
 	}
 }
 
@@ -275,7 +331,7 @@ func (cfg *remoteConfig) finishTUI(ctx context.Context, c *cli.Context, out tui.
 	ew := errWriter(c)
 	switch {
 	case out.Detached:
-		fmt.Fprintf(ew, "detached — the build continues; re-attach: jobs-client watch --server %s --request-id %s\n", cfg.server, requestID)
+		fmt.Fprintf(ew, "detached — the %s continues; re-attach: jobs-client watch --server %s --request-id %s\n", cfg.what(), cfg.server, requestID)
 		return nil
 	case out.HaveFinal && out.Final.Phase == "done":
 		return cfg.pullHome(ctx, c, ac, cs, k, lv)
@@ -283,19 +339,23 @@ func (cfg *remoteConfig) finishTUI(ctx context.Context, c *cli.Context, out tui.
 		fmt.Fprintf(ew, "re-attach: jobs-client watch --server %s --request-id %s\n", cfg.server, requestID)
 		fmt.Fprintf(ew, "full failure report (all attempts, durable): jobs-client diagnose --server %s --request %s\n", cfg.server, requestID)
 		if s := failureSummary(out.Final); s != "" {
-			return cli.Exit("build FAILED: "+s, 1)
+			return cli.Exit(cfg.what()+" FAILED: "+s, 1)
 		}
-		return cli.Exit(fmt.Sprintf("build FAILED (request %s)", requestID), 1)
+		return cli.Exit(fmt.Sprintf("%s FAILED (request %s)", cfg.what(), requestID), 1)
 	default: // cancelled (own confirm or external)
-		return cli.Exit("build cancelled", 130)
+		return cli.Exit(cfg.what()+" cancelled", 130)
 	}
 }
 
 // pullHome fetches the finished build's refs into the local store —
 // build-from:K first (K→F), then build-output:F and build-output-deps:F —
 // under one cumulative "[pull]" counter, and prints the identity and output
-// key like a local build.
+// key like a local build. For a test it pulls the test-passed marker
+// instead (pullTestHome).
 func (cfg *remoteConfig) pullHome(ctx context.Context, c *cli.Context, ac *amberclient.Client, cs *clientStore, k key.Key, lv *liveView) error {
+	if cfg.test {
+		return cfg.pullTestHome(ctx, c, ac, cs, k, lv)
+	}
 	pull := newXferProgress(lv, "pull")
 	var mu sync.Mutex
 	var baseDone, baseTotal int // finished pulls' objects, folded into the display
@@ -338,6 +398,56 @@ func (cfg *remoteConfig) pullHome(ctx context.Context, c *cli.Context, ac *amber
 	// pullHome is the shared tail of both the classic and TUI remote-build
 	// paths (run's "done" case and finishTUI's), so sweeping here after it
 	// completes covers both without duplicating the call at each caller.
+	cs.MaybeGC(ctx)
+	return nil
+}
+
+// pullTestHome fetches a passed test's memo into the local store (tests
+// design §8): build-from:K (K→F) and test-passed:F (→ KT, whose closure is
+// the KT tree — the covered sources the client already holds, so the pull
+// is cheap), then writes test-passed:<KT> locally so a later `jobs-client
+// test` of the same tree memo-joins on KT as well as on F. Prints the test
+// identity and KT like a local test.
+func (cfg *remoteConfig) pullTestHome(ctx context.Context, c *cli.Context, ac *amberclient.Client, cs *clientStore, k key.Key, lv *liveView) error {
+	pull := newXferProgress(lv, "pull")
+	var mu sync.Mutex
+	var baseDone, baseTotal int
+	var bytes int64
+	cb := func(done, total int) {
+		mu.Lock()
+		d, t := baseDone+done, baseTotal+total
+		mu.Unlock()
+		pull.cb(d, t)
+	}
+	step := func(name string) (key.Key, error) {
+		root, stats, err := ac.PullWithProgress(ctx, cs.Store, name, cb)
+		mu.Lock()
+		baseDone += stats.Objects
+		baseTotal += stats.Objects
+		bytes += stats.Bytes
+		mu.Unlock()
+		return root, err
+	}
+	f, err := step("build-from:" + k.String())
+	if err != nil {
+		pull.finish(false)
+		return fmt.Errorf("pull build-from: %w", err)
+	}
+	kt, err := step(cover.TestPassedRef(f))
+	if err != nil {
+		pull.finish(false)
+		return fmt.Errorf("pull test-passed: %w", err)
+	}
+	// The pulled closure IS the KT tree (verified complete by the pull), so
+	// the KT-level memo can be recorded locally without a second pull.
+	if err := cs.Store.PutRef(ctx, cover.TestPassedRef(kt), kt); err != nil {
+		pull.finish(false)
+		return err
+	}
+	pull.setBytes(bytes)
+	pull.finish(true)
+	fmt.Fprintf(c.App.Writer, "test:   %s\n", f.String())
+	fmt.Fprintf(c.App.Writer, "passed: %s\n", kt.String())
 	cs.MaybeGC(ctx)
 	return nil
 }
@@ -415,7 +525,7 @@ func streamWatch(ctx context.Context, bc *apiConn, requestID string, lv *liveVie
 		}
 		if snap.Terminal {
 			tracker.close() // drain trailing output above the verdict line
-			lv.Collapse(watchSummary(lv, snap.Phase, time.Since(start)))
+			lv.Collapse(watchSummary(lv, snap, time.Since(start)))
 			return snap, nil
 		}
 	}

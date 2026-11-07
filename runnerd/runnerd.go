@@ -53,7 +53,7 @@ import (
 
 // The runner-facing server ALPNs (frozen contract — serve/ mounts these).
 const (
-	alpnRunnerNATS  = "jobs-runner-nats/3.0"
+	alpnRunnerNATS  = "jobs-runner-nats/4.0"
 	alpnRunnerAmber = "jobs-runner-amber/1.0"
 )
 

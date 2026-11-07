@@ -160,3 +160,64 @@ func TestPinnedClosureRoundTripAndByteCompat(t *testing.T) {
 		t.Fatalf("closure round-trip: got %v", dec.Closure)
 	}
 }
+
+func TestTestJobCanonicalEncoding(t *testing.T) {
+	a := TestJob{
+		Inputs: []ResolvedInput{{Name: "app", Kind: KindBuild, Out: []byte{1, 2}, Deps: []byte{3}}, {Name: "tc", Kind: KindImport, Out: []byte{4}}},
+		Env:    map[string]string{"B": "2", "A": "1"},
+		Script: "run",
+		Dir:    "svc",
+	}
+	b := a
+	b.Env = map[string]string{"A": "1", "B": "2"} // same map, different insertion order
+	ea, err := EncodeTestJob(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eb, err := EncodeTestJob(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(ea) != string(eb) {
+		t.Fatal("canonical encoding depends on map insertion order")
+	}
+	got, err := DecodeTestJob(ea)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Inputs) != 2 || got.Inputs[0].Name != "app" || len(got.Inputs[1].Deps) != 0 || got.Dir != "svc" {
+		t.Fatalf("decoded mismatch: %+v", got)
+	}
+	// An empty cache list is omitted: the encoding has no "caches" key.
+	if bytes.Contains(ea, []byte("caches")) {
+		t.Fatalf("unexpected caches key in %x", ea)
+	}
+}
+
+func TestPinnedTimeoutOmitemptyByteStable(t *testing.T) {
+	base := Pinned{Env: map[string]string{}, Script: "x"}
+	b1, err := EncodePinned(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A zero TimeoutSec (every build, a test on the default) encodes
+	// identically to the pre-field bytes.
+	withZero := base
+	withZero.TimeoutSec = 0
+	b2, _ := EncodePinned(withZero)
+	if !bytes.Equal(b1, b2) {
+		t.Fatal("zero TimeoutSec must not change encoding")
+	}
+	withZero.TimeoutSec = 600
+	b3, _ := EncodePinned(withZero)
+	if bytes.Equal(b1, b3) {
+		t.Fatal("a set TimeoutSec must change the encoding")
+	}
+	got, err := DecodePinned(b3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TimeoutSec != 600 {
+		t.Fatalf("timeout round-trip: %d", got.TimeoutSec)
+	}
+}

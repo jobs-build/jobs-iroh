@@ -40,11 +40,16 @@ func RunPluginResolve(ctx context.Context, st *amber.Store, rw RefWriter, brc Bu
 	}
 	defer env.cleanup()
 
+	// ContextKey/Dir/Test ride along so a test recipe's predeclared `build`
+	// input is constructed identically at both eval stages (tests design §3).
 	pres, err := recipe.EvalPlugins(recipe.EvalConfig{
 		Platform:         env.Platform,
 		Params:           env.Params,
 		Source:           env.Source,
 		SourceContentKey: env.SourceContentKey,
+		ContextKey:       env.ContextKey,
+		Dir:              env.Dir,
+		Test:             env.Test,
 	}, env.Recipe)
 	if err != nil {
 		return hard("evaluating", "recipe plugins(): "+err.Error(), 0)
@@ -152,7 +157,7 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 		return retryable("resolving", err)
 	}
 
-	res, err := recipe.EvalBuild(recipe.EvalConfig{
+	evalCfg := recipe.EvalConfig{
 		Platform:         env.Platform,
 		Params:           env.Params,
 		Source:           env.Source,
@@ -161,13 +166,24 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 		Dir:              env.Dir,
 		SeedFetchers:     bootstrap.SeedFetcherNames(),
 		Deps:             evalDeps,
-	}, env.Recipe, callers)
+	}
+	// A test F-tree evaluates test() (tests design §3); everything after
+	// the eval — covers, pinned inputs, the build-pinned:F publish — is the
+	// same, which is what lets testvalue share this stage with builds.
+	entry := "build"
+	var res recipe.BuildResult
+	if env.Test {
+		entry = "test"
+		res, err = recipe.EvalTest(evalCfg, env.Recipe, callers)
+	} else {
+		res, err = recipe.EvalBuild(evalCfg, env.Recipe, callers)
+	}
 	if err != nil {
 		var pe *recipe.PluginError
 		if errors.As(err, &pe) && pe.Retryable {
 			return retryable("evaluating", err)
 		}
-		return hard("evaluating", "recipe build(): "+err.Error(), 0)
+		return hard("evaluating", "recipe "+entry+"(): "+err.Error(), 0)
 	}
 
 	if err := res.Validate(); err != nil {
@@ -244,6 +260,7 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 		RuntimeDeps: builddef.SortKeys(rtKeys),
 		Caches:      builddef.CanonicalCaches(res.Caches),
 		Resources:   res.Resources,
+		TimeoutSec:  res.TimeoutSec,
 		Sources:     builddef.CanonicalSources(covered),
 		Closure:     builddef.CanonicalSources(closure),
 		Dir:         env.Dir,

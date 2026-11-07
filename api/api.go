@@ -243,6 +243,9 @@ type RequestInfo struct {
 	Phase     string      `cbor:"phase"`
 	Counts    wire.Counts `cbor:"counts"`
 	CreatedNs int64       `cbor:"createdNs"`
+	// Test marks a test request (its target is a testvalue; the K is a
+	// test definition's). Additive + omitempty: absent from old servers.
+	Test bool `cbor:"test,omitempty"`
 }
 
 // FleetReply is the runner fleet snapshot (admin).

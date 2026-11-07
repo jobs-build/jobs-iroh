@@ -54,6 +54,8 @@ func (s *Sched) healCarrierLocked(name string, k key.Key) error {
 //	              pinned input's output refs (build inputs incl.
 //	              build-output-deps — the runtime-closure read) + declared
 //	              build-cache:<id>:<platform>
+//	testrun       kt-tree/<KT> + build-pinned:<KT> + the buildrun set
+//	              otherwise (same driver assembly)
 //
 // Refs that may legitimately be absent (seed fetcher/shell before bootstrap,
 // cold caches) are included only when present — a nonexistent name in
@@ -187,14 +189,20 @@ func (s *Sched) computePullRefsLocked(n *node) ([]string, error) {
 			}
 		}
 
-	case wire.KindBuildRun:
+	case wire.KindBuildRun, wire.KindTestRun:
 		// KP-keyed (sibling-sources design §10.1): the runner pulls the
 		// covered closure by its kp-tree carrier — never the monorepo — plus
-		// the build-pinned:<KP> alias written at KP derivation.
-		if err := s.healCarrierLocked(KPTreeRef(n.id.key), n.id.key); err != nil {
+		// the build-pinned:<KP> alias written at KP derivation. A testrun is
+		// KT-keyed with the kt-tree carrier and the build-pinned:<KT> alias
+		// (tests design §5); the rest of the driver's reads are identical.
+		carrier := KPTreeRef(n.id.key)
+		if n.id.kind == wire.KindTestRun {
+			carrier = KTTreeRef(n.id.key)
+		}
+		if err := s.healCarrierLocked(carrier, n.id.key); err != nil {
 			return nil, err
 		}
-		add(KPTreeRef(n.id.key), "build-pinned:"+n.id.key.String())
+		add(carrier, "build-pinned:"+n.id.key.String())
 		if err := addIfPresent("shell:" + n.platform); err != nil {
 			return nil, err
 		}

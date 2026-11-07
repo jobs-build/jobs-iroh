@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/cover"
 	"github.com/jobs-build/jobs-iroh/importdef"
 	"github.com/jobs-build/jobs-iroh/resources"
 	"github.com/jobs-build/jobs-iroh/wire"
@@ -44,6 +45,11 @@ type node struct {
 	fResolved  bool
 	kp         key.Key // resolved from pin-cover/<v>:F after pin (sibling-sources §10.1)
 	kpResolved bool
+	// testvalue pipeline state (tests design §5): KT is derived once every
+	// pinned input — required under the testvalue itself — is done.
+	kt             key.Key
+	ktResolved     bool
+	inputsRequired bool
 
 	// Unfold-derived placement inputs.
 	pinnedRes resources.Resources    // buildrun: Pinned.Resources
@@ -71,7 +77,15 @@ type node struct {
 	cached bool
 }
 
-func placeable(kind string) bool { return kind != wire.KindBuildValue }
+func placeable(kind string) bool {
+	return kind != wire.KindBuildValue && kind != wire.KindTestValue
+}
+
+// orchestrator reports the two server-internal value kinds (never placed;
+// they drive a stage chain and carry request interest/resources).
+func orchestrator(kind string) bool {
+	return kind == wire.KindBuildValue || kind == wire.KindTestValue
+}
 
 // genSeed is a fresh node's attempt-generation base. Node state is
 // memory-only, but the JOBS/RESULTS msg-id dedup windows (job-<node>-<gen> /
@@ -96,6 +110,8 @@ func resKind(kind string) string {
 		return resources.KindBuildPin
 	case wire.KindBuildRun:
 		return resources.KindBuild
+	case wire.KindTestRun:
+		return resources.KindTest
 	default:
 		return kind
 	}
@@ -209,6 +225,19 @@ func (s *Sched) outputExistsLocked(n *node) (bool, error) {
 		n.f, n.fResolved = f, true
 		_, ok, err = s.store.GetKey(s.ctx, "build-output:"+f.String())
 		return ok, err
+	case wire.KindTestRun:
+		_, ok, err := s.store.GetKey(s.ctx, cover.TestPassedRef(n.id.key))
+		return ok, err
+	case wire.KindTestValue:
+		// The two-hop test analogue: build-from:K → F → test-passed:F (the
+		// alias written on advance-to-done, tests design §4.3).
+		f, ok, err := s.store.GetKey(s.ctx, "build-from:"+k)
+		if err != nil || !ok {
+			return false, err
+		}
+		n.f, n.fResolved = f, true
+		_, ok, err = s.store.GetKey(s.ctx, cover.TestPassedRef(f))
+		return ok, err
 	default:
 		return false, nil
 	}
@@ -280,7 +309,9 @@ func (s *Sched) unfoldLocked(n *node) {
 			s.requireInputLocked(n, ni.In, ni.Name)
 		}
 
-	case wire.KindBuildRun:
+	case wire.KindBuildRun, wire.KindTestRun:
+		// build-pinned:<KP> / build-pinned:<KT> — the aliases written at KP /
+		// KT derivation — keep the two run kinds byte-for-byte alike here.
 		pinned, err := s.readPinnedLocked(n.id.key)
 		if err != nil {
 			s.failNodeLocked(n, "read build-pinned: "+err.Error())
@@ -299,6 +330,9 @@ func (s *Sched) unfoldLocked(n *node) {
 
 	case wire.KindBuildValue:
 		s.advanceBuildValueLocked(n)
+
+	case wire.KindTestValue:
+		s.advanceTestValueLocked(n)
 	}
 }
 
@@ -407,6 +441,91 @@ func (s *Sched) advanceBuildValueLocked(bv *node) {
 	s.nodeDoneLocked(bv)
 }
 
+// advanceTestValueLocked walks the testvalue orchestrator one step (tests
+// design §5): the shared buildfrom → pluginresolve → pin chain exactly as a
+// buildvalue, then — unlike a build, whose run node needs only its pinned
+// DEFINITION — every pinned input is required under the testvalue itself,
+// because the test-run key KT is a function of the inputs' resolved
+// CONTENT. Once every dep is done KT is derived (idempotent; writes the
+// build-pinned:<KT> alias and the kt-tree carrier), the testrun is required
+// (its doneness fast-path on test-passed:<KT> is the memo), and the
+// test-passed:F alias is written before the testvalue goes done. Re-entrant:
+// called at creation and on every dep completion.
+func (s *Sched) advanceTestValueLocked(tv *node) {
+	if tv.phase == wire.PhaseDone || tv.phase == wire.PhaseFailed {
+		return
+	}
+	k := tv.id.key
+	bf := s.require(wire.KindBuildFrom, k, tv.def, tv.platform, tv, nil, tv.label)
+	if bf.phase != wire.PhaseDone {
+		return
+	}
+	if !tv.fResolved {
+		f, ok, err := s.store.GetKey(s.ctx, "build-from:"+k.String())
+		if err != nil {
+			s.failNodeLocked(tv, "resolve F: "+err.Error())
+			return
+		}
+		if !ok {
+			s.failNodeLocked(tv, "build-from:"+k.String()+" missing after buildfrom done")
+			return
+		}
+		tv.f, tv.fResolved = f, true
+	}
+	pr := s.require(wire.KindPluginResolve, tv.f, nil, tv.platform, tv, nil, tv.label)
+	if pr.phase != wire.PhaseDone {
+		return
+	}
+	pin := s.require(wire.KindPin, tv.f, nil, tv.platform, tv, nil, tv.label)
+	if pin.phase != wire.PhaseDone {
+		return
+	}
+	if !tv.kpResolved {
+		kp, err := s.resolveKPLocked(tv.f)
+		if err != nil {
+			s.failNodeLocked(tv, "resolve KP: "+err.Error())
+			return
+		}
+		tv.kp, tv.kpResolved = kp, true
+	}
+	if !tv.inputsRequired {
+		pinned, err := s.readPinnedLocked(tv.kp)
+		if err != nil {
+			s.failNodeLocked(tv, "read build-pinned: "+err.Error())
+			return
+		}
+		tv.inputsRequired = true
+		for _, pi := range pinned.Inputs {
+			s.requireInputLocked(tv, builddef.Input{Kind: pi.Kind, Definition: pi.Definition}, pi.Name)
+			if tv.phase == wire.PhaseFailed {
+				return // bad input key or a sub-build cycle
+			}
+		}
+	}
+	for d := range tv.deps {
+		if d.phase != wire.PhaseDone {
+			return
+		}
+	}
+	if !tv.ktResolved {
+		kt, err := s.deriveKT(tv.kp)
+		if err != nil {
+			s.failNodeLocked(tv, "derive KT: "+err.Error())
+			return
+		}
+		tv.kt, tv.ktResolved = kt, true
+	}
+	run := s.require(wire.KindTestRun, tv.kt, nil, tv.platform, tv, nil, tv.label)
+	if run.phase != wire.PhaseDone {
+		return
+	}
+	if err := s.ensureTestAliasLocked(tv.f, tv.kt); err != nil {
+		s.failNodeLocked(tv, "write test-passed alias: "+err.Error())
+		return
+	}
+	s.nodeDoneLocked(tv)
+}
+
 // cycleChainLocked reports whether target is an ancestor of from (walking
 // dependent edges), returning the node-name chain target…from when it is —
 // the sub-build cycle detector (sibling-sources design §8). Bounded: each
@@ -456,11 +575,14 @@ func (s *Sched) nodeDoneLocked(n *node) {
 
 // onDepDoneLocked re-evaluates a dependent after one of its deps completed.
 func (s *Sched) onDepDoneLocked(d *node) {
-	if d.id.kind == wire.KindBuildValue {
+	switch d.id.kind {
+	case wire.KindBuildValue:
 		s.advanceBuildValueLocked(d)
-		return
+	case wire.KindTestValue:
+		s.advanceTestValueLocked(d)
+	default:
+		s.maybeEnqueueLocked(d)
 	}
-	s.maybeEnqueueLocked(d)
 }
 
 // failNodeLocked marks a node FAILED — memory-only and sticky while watched
@@ -509,7 +631,7 @@ func (s *Sched) maybeEnqueueLocked(n *node) {
 func (s *Sched) requirementLocked(n *node) resources.Resources {
 	req := resources.DefaultFor(resKind(n.id.kind)).Max(n.pinnedRes)
 	for d := range n.dependents {
-		if d.id.kind != wire.KindBuildValue {
+		if !orchestrator(d.id.kind) {
 			continue
 		}
 		for rid := range d.interest {
@@ -702,7 +824,7 @@ func (s *Sched) applyRecipeLabelLocked(n *node, refs []wire.RefProposal) {
 	n.label = label
 	relabelled := 0
 	for d := range n.dependents {
-		if d.id.kind == wire.KindBuildValue {
+		if orchestrator(d.id.kind) {
 			d.label = label
 			relabelled++
 		}

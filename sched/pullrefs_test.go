@@ -282,3 +282,42 @@ func TestPullRefsBuildRun(t *testing.T) {
 		builddef.CacheRefName("warm", testPlatform),
 	})
 }
+
+func TestPullRefsTestRun(t *testing.T) {
+	e := newPullEnv(t)
+	kt := e.ingest("the KT tree")
+
+	imp := builddef.Input{Kind: builddef.KindImport, Definition: importDefBytes(t, importdef.Definition{Fetcher: "github", Params: []byte{0xf6}, Platform: testPlatform})}
+	bldDef := buildDefBytes(t, builddef.Definition{
+		Source:   builddef.Input{Kind: builddef.KindImport, Definition: importDefBytes(t, importdef.Definition{Fetcher: "tarball+https", Params: []byte{0xf6}, Platform: testPlatform})},
+		Platform: testPlatform, Params: []byte{0xf6},
+	})
+	bld := builddef.Input{Kind: builddef.KindBuild, Definition: bldDef}
+	bldK := inputKey(t, bld)
+	fb := e.ingest("input F")
+	e.putRef("build-from:"+bldK.String(), fb)
+	e.putRef(builddef.CacheRefName("warm", testPlatform), e.ingest("cache state"))
+
+	n := &node{
+		id:        nodeID{kind: wire.KindTestRun, key: kt},
+		platform:  testPlatform,
+		runInputs: []builddef.Input{imp, bld},
+		caches:    []builddef.PinnedCache{{ID: "warm", Path: "/c"}, {ID: "cold", Path: "/d"}},
+	}
+	// KT-keyed: the kt-tree carrier + the build-pinned:<KT> alias, then the
+	// buildrun set (the driver assembly is shared).
+	e.assertExact(e.pullRefs(n), []string{
+		KTTreeRef(kt),
+		"build-pinned:" + kt.String(),
+		"import-output:" + inputKey(t, imp).String(),
+		"build-from:" + bldK.String(),
+		"build-output:" + fb.String(),
+		"build-output-deps:" + fb.String(),
+		builddef.CacheRefName("warm", testPlatform),
+	})
+	// The carrier is healed when missing (a crash between derivation and
+	// the carrier write), so the runner can always pull by name.
+	if got, ok, _ := e.st.GetKey(e.ctx, KTTreeRef(kt)); !ok || got != kt {
+		t.Fatalf("kt-tree carrier not healed: ok=%v got=%s", ok, got)
+	}
+}

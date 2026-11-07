@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+- **Tests.** A `TESTS.jobs` next to `BUILD.jobs` defines `test()` (the
+  `build()` struct without `runtime_deps`; `plugins()` as for builds) and
+  can name the directory's own build as an input through the predeclared
+  `build` value — the same definition `jobs-client build`/`remote-build`
+  of that directory constructs, so it joins the user's build. Tests produce
+  no output: exit 0 records `test-passed:<KT>`, a failure records nothing
+  and re-runs on the next submit; a run is bounded by `timeout` on `test()`
+  (Go duration string in whole seconds, default 5m — enforced by the runner
+  as a hard failure, not part of KT; `build()` rejects the field). KT keys
+  a test by what its sandbox sees —
+  script, env, covered sources, platform, and every input's *content*
+  (`cover.DeriveTest`, identity-critical and shared by the server and the
+  local pipeline) — so a commit that leaves the build output and the
+  covered sources unchanged memo-hits instead of re-running. New scheduler
+  kinds `testvalue`/`testrun` (the testvalue owns its inputs and derives KT
+  once they are done), gate row `test-passed:<KT>`, refs `test:K`,
+  `build-pinned:<KT>`, `kt-tree/<KT>`, `test-passed:<F>`. New commands
+  `jobs-client test` and `jobs-client remote-test` (pulls the memo home);
+  `status` gains a KIND column and the watch views name test requests;
+  `api.RequestInfo.Test` is additive; the registry's tag listing skips
+  test Ks. **Runner ALPN `jobs-runner-nats/3.0 → 4.0`**: an old runner
+  would decode a test definition without its `test` field and bind
+  `build-from:K_test` to the build's F (wrong results, not clean errors).
+  Design: `docs/design/2026-11-07-tests.md`.
+
 ## v0.35.1 — 2026-09-18
 
 - **go-iroh v0.2.1, transport-iroh v0.4.1.** A fix release of the

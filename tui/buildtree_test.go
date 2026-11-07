@@ -266,3 +266,69 @@ func TestFlattenCycleGuard(t *testing.T) {
 		t.Fatalf("cycle flatten = %d rows", len(rows))
 	}
 }
+
+// testChainSnap is a test request's closure: testvalue 1 with its chain
+// (buildfrom 1, pluginresolve 2, pin 2, testrun 3), a toolchain import 4
+// and the directory's build 5 both hanging under the testvalue (its inputs
+// are its own deps), the build with its own chain and buildrun 6.
+func testChainSnap() api.Snapshot {
+	tv, bf := tn(wire.KindTestValue, 1), tn(wire.KindBuildFrom, 1)
+	pr, pin := tn(wire.KindPluginResolve, 2), tn(wire.KindPin, 2)
+	tr, imp := tn(wire.KindTestRun, 3), tn(wire.KindImport, 4)
+	bv, bbf := tn(wire.KindBuildValue, 5), tn(wire.KindBuildFrom, 5)
+	bpr, bpin, br := tn(wire.KindPluginResolve, 7), tn(wire.KindPin, 7), tn(wire.KindBuildRun, 6)
+	return api.Snapshot{
+		RequestID: "r1",
+		Phase:     "running",
+		Nodes: []api.NodeSnap{
+			{Node: tv, Label: "svc", Phase: wire.PhaseWaiting, Deps: []string{bf, pr, pin, imp, bv, tr}},
+			{Node: bf, Phase: wire.PhaseDone, ElapsedMs: 100},
+			{Node: pr, Phase: wire.PhaseDone, ElapsedMs: 100},
+			{Node: pin, Phase: wire.PhaseDone, ElapsedMs: 100},
+			{Node: tr, Phase: wire.PhaseRunning, ElapsedMs: 4000, Runner: "r-t"},
+			{Node: imp, Label: "toolchain", Phase: wire.PhaseDone, Cached: true},
+			{Node: bv, Label: "app", Phase: wire.PhaseDone, Deps: []string{bbf, bpr, bpin, br}},
+			{Node: bbf, Phase: wire.PhaseDone}, {Node: bpr, Phase: wire.PhaseDone}, {Node: bpin, Phase: wire.PhaseDone},
+			{Node: br, Phase: wire.PhaseDone, Cached: true, ElapsedMs: 0},
+		},
+	}
+}
+
+func TestFoldTestChain(t *testing.T) {
+	snap := testChainSnap()
+	g := FoldSnapshot(snap)
+	tv := tn(wire.KindTestValue, 1)
+	if !reflect.DeepEqual(g.Roots, []string{tv}) {
+		t.Fatalf("roots = %v, want [%s]", g.Roots, tv)
+	}
+	r := row(t, g, tv)
+	if r.Kind != wire.KindTestValue || r.Phase != wire.PhaseRunning || r.Stage != "test" {
+		t.Fatalf("row = %+v, want a running testvalue at stage test", r)
+	}
+	if r.ElapsedMs != 4000 || r.Runner != "r-t" || r.LogNode != tn(wire.KindTestRun, 3) {
+		t.Fatalf("row = %+v", r)
+	}
+	// The inputs are the row's children, label-ordered: app, toolchain.
+	if want := []string{tn(wire.KindBuildValue, 5), tn(wire.KindImport, 4)}; !reflect.DeepEqual(r.Children, want) {
+		t.Fatalf("children = %v, want %v", r.Children, want)
+	}
+	app := row(t, g, tn(wire.KindBuildValue, 5))
+	if app.Phase != wire.PhaseDone || !app.Cached {
+		t.Fatalf("app row = %+v, want cached done", app)
+	}
+
+	// Done test: the row's duration is the testrun's.
+	snap.Nodes[0].Phase = wire.PhaseDone
+	snap.Nodes[4].Phase = wire.PhaseDone
+	r = row(t, FoldSnapshot(snap), tv)
+	if r.Phase != wire.PhaseDone || r.ElapsedMs != 4000 || r.Cached {
+		t.Fatalf("done row = %+v", r)
+	}
+	// Failed test: the verdict names the test stage.
+	snap.Nodes[0].Phase = wire.PhaseUpstream
+	snap.Nodes[4].Phase, snap.Nodes[4].ErrSummary = wire.PhaseFailed, "testing: 1 test failed"
+	r = row(t, FoldSnapshot(snap), tv)
+	if r.Phase != wire.PhaseFailed || r.Stage != "test" || r.Err != "testing: 1 test failed" {
+		t.Fatalf("failed row = %+v", r)
+	}
+}

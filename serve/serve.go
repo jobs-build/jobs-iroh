@@ -48,8 +48,11 @@ const (
 	// change would make an old runner produce wrong results rather than
 	// clean errors. Bumped to 3.0 for source closures: an old runner's
 	// recipe decoder silently ignores closure= and would fork
-	// pin-cover/<v>:F content (source-closure design §7.2).
-	ALPNRunnerNATS  = "jobs-runner-nats/3.0"
+	// pin-cover/<v>:F content (source-closure design §7.2). Bumped to 4.0
+	// for tests: an old runner's buildfrom drops the unknown `test` field
+	// and commits build-from:K_test → the BUILD's F, so the test pipeline
+	// would pin and run the build script as the test (tests design §7).
+	ALPNRunnerNATS  = "jobs-runner-nats/4.0"
 	ALPNRunnerAmber = "jobs-runner-amber/1.0" // runner: CAS object/ref sync
 	ALPNAdmin       = "jobs-admin/1.0"        // admin TUI: observe builds, stats
 	ALPNAmberAdmin  = "jobs-amber-admin/1.0"  // client: CAS ref sync (source up, outputs home)

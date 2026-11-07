@@ -82,7 +82,13 @@ type Pinned struct {
 	RuntimeDeps [][]byte          `cbor:"runtimeDeps"`
 	Caches      []PinnedCache     `cbor:"caches,omitempty"`
 	Resources   *PinnedResources  `cbor:"resources,omitempty"`
-	Sources     []string          `cbor:"sources,omitempty"`
+	// TimeoutSec is the recipe-declared wall-clock limit of a TEST run, in
+	// seconds (tests design §6.1); 0 = the runner's default. build() never
+	// sets it, so build pins stay byte-identical. Like Resources it rides
+	// build-pinned and is deliberately NOT part of KT — raising a passed
+	// test's limit must not re-run it.
+	TimeoutSec int64    `cbor:"timeout_sec,omitempty"`
+	Sources    []string `cbor:"sources,omitempty"`
 	// Closure, when non-empty, is a COMPLETE cover of the source context
 	// (source-closure design §4): the build dir is NOT auto-seeded and the
 	// covered tree is exactly this expanded list. Mutually exclusive with
@@ -114,4 +120,38 @@ func DecodePinned(b []byte) (Pinned, error) {
 	var p Pinned
 	err := cbor.Unmarshal(b, &p)
 	return p, err
+}
+
+// ResolvedInput is one pinned input resolved to CONTENT (tests design
+// §4.2): Out is the tree the sandbox mounts at /jobs/store/<BOK> — the c/
+// artifact of a build, the whole output tree of an import — and Deps the
+// build's materialized runtime-closure tree (build-output-deps), absent for
+// imports. Definitions deliberately do not appear: a test's identity is what
+// it runs against, not how that was described.
+type ResolvedInput struct {
+	Name string `cbor:"name"`
+	Kind string `cbor:"kind"`
+	Out  []byte `cbor:"out"`
+	Deps []byte `cbor:"deps,omitempty"`
+}
+
+// TestJob is the job.cbor of a KT tree (tests design §4.2): the pinned
+// test's script, env, sandbox dir and cache declarations, with its inputs
+// resolved to content keys. Resources are deliberately absent — raising a
+// passed test's memory must not re-run it. Canonical CBOR, so the same
+// resolved job yields the same bytes everywhere.
+type TestJob struct {
+	Inputs []ResolvedInput   `cbor:"inputs"`
+	Env    map[string]string `cbor:"env"`
+	Script string            `cbor:"script"`
+	Caches []PinnedCache     `cbor:"caches,omitempty"`
+	Dir    string            `cbor:"dir,omitempty"`
+}
+
+func EncodeTestJob(j TestJob) ([]byte, error) { return canonEnc.Marshal(j) }
+
+func DecodeTestJob(b []byte) (TestJob, error) {
+	var j TestJob
+	err := cbor.Unmarshal(b, &j)
+	return j, err
 }

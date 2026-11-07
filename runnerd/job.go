@@ -232,7 +232,7 @@ func (d *daemon) driveStage(ctx context.Context, job wire.Job, rw runner.RefWrit
 	case wire.KindImport:
 		ex := runner.CgroupExecutor{MemoryMaxBytes: job.MemBytes}
 		return runner.RunImport(ctx, d.st, rw, ex, d.cacheDir, k, nil, ev)
-	case wire.KindBuildFrom, wire.KindPluginResolve, wire.KindPin, wire.KindBuildRun:
+	case wire.KindBuildFrom, wire.KindPluginResolve, wire.KindPin, wire.KindBuildRun, wire.KindTestRun:
 		brc, oc := d.buildRunCfg(ctx, job, ev)
 		if oc != nil {
 			return *oc
@@ -244,6 +244,8 @@ func (d *daemon) driveStage(ctx context.Context, job wire.Job, rw runner.RefWrit
 			return runner.RunPluginResolve(ctx, d.st, rw, brc, k)
 		case wire.KindPin:
 			return runner.RunPin(ctx, d.st, rw, brc, k)
+		case wire.KindTestRun:
+			return runner.RunTest(ctx, d.st, rw, brc, runner.NamespaceBuildExecutor{}, k)
 		default:
 			return runner.RunBuild(ctx, d.st, rw, brc, runner.NamespaceBuildExecutor{}, k)
 		}

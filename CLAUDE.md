@@ -7,7 +7,7 @@ runners, a client, connected only by iroh QUIC — no k8s, HTTP, WebSockets,
 CRDTs, gossip, or signing keys. It embeds NATS (JetStream, `DontListen`) for
 scheduling and amber-store-core as the content-addressed store. Three core
 binaries (`jobs-server`, `jobs-runner`, `jobs-client`) and five ALPNs on one
-server endpoint: `jobs-build/1.0`, `jobs-runner-nats/3.0`,
+server endpoint: `jobs-build/1.0`, `jobs-runner-nats/4.0`,
 `jobs-runner-amber/1.0`, `jobs-admin/1.0`, `jobs-amber-admin/1.0`. The build
 model (Starlark recipes, canonical-CBOR identity, hermetic sandbox,
 self-bootstrapping fetchers/shell) is ported from jobs intact. A fourth,
@@ -108,19 +108,19 @@ the outward one.
 | Package | What it is |
 |---|---|
 | `amber/` | Store seam over amber-store-core. Pinned chunk params (ByteOpts 32Ki/128Ki/256Ki, ItemBits 7) are **identity-critical** — never change them. Sibling-sources ops: PruneTree/NormalizeTree (covered trees, uid/gid=0 + ZIP-epoch mtimes — KP is mtime-immune), OverlayTree (generated sources), BuildKPTree ({job.cbor, platform, v, src/}). Source ingest excludes `.git` at every level. SetObserver/SetRefGuard GC seams (nil-safe: unset = current behavior). |
-| `cover/` | **Identity-critical shared** closure walker + KP derivation (sibling-sources design): pin expands declared+discovered paths (component-wise in-store symlink chase, ELOOP budget 40, dangling warn-keep, escaping fail + `sources_allow_escaping`) into `Pinned.Sources`; `WalkClosure` expands complete covers (no dir seed, workdir validation) into `Pinned.Closure`; `cover.Derive` (used identically by pin runner, server pin-commit, local pipeline) = prune + generated overlay + KP tree. Bump `amber.KPVersion` on ANY semantic change here or in PruneTree. |
+| `cover/` | **Identity-critical shared** closure walker + KP derivation (sibling-sources design): pin expands declared+discovered paths (component-wise in-store symlink chase, ELOOP budget 40, dangling warn-keep, escaping fail + `sources_allow_escaping`) into `Pinned.Sources`; `WalkClosure` expands complete covers (no dir seed, workdir validation) into `Pinned.Closure`; `cover.Derive` (used identically by pin runner, server pin-commit, local pipeline) = prune + generated overlay + KP tree. `cover.ResolveInputs` + `cover.DeriveTest` (tests design) = the test-run key KT: the KP tree's `src/` + a `TestJob` with inputs resolved to content keys (used identically by the server's testvalue advance and the local pipeline). Bump `amber.KPVersion` on ANY semantic change here or in PruneTree. |
 | `natsiroh/` | NATS-over-iroh tunnel (dialer + stream proxy). The dialer writes a `0x00` stream preamble because the NATS server speaks first. |
 | `wire/` | Frozen scheduler wire contracts: node names, phases, Job/Result CBOR, size-class ladder, NATS subject/stream layout. |
 | `api/` | Frozen client API frames (4-byte BE length + CBOR `{t,b}` envelope) for the build/admin ALPNs. |
 | `events/` | Build-event schema + OutputWriter (32KiB chunks, 64KiB/100ms flush) — events ride core NATS via the Sink seam. |
-| `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings, durable FAILURES records + Diagnose. Nodes carry display-only labels (recipe dep names/dirs/fetchers, root from SubmitRequest.Label) — never identity. Forwards `wire.Result.ReadRefs` to the tracker before commit logic. |
+| `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings, durable FAILURES records + Diagnose. Nodes carry display-only labels (recipe dep names/dirs/fetchers, root from SubmitRequest.Label) — never identity. Forwards `wire.Result.ReadRefs` to the tracker before commit logic. `testvalue` orchestrates tests: shared buildfrom/pluginresolve/pin, inputs required under the testvalue itself, `deriveKT` once they are done, `testrun(KT)`, `test-passed:F` alias. |
 | `reftrack/` | Server-side ref access tracker: touch/pin/expire + CBOR snapshot (`<data-dir>/refaccess.cbor`); protected classes shell:/fetcher:/seed-src:; build-output(-deps) family shares one clock. |
 | `gcsweep/` | Host-agnostic GC engine (extracted from serve): reftrack + collector + sweep pipeline + trees/fetcher-dir sweep; embedded by server, runner (hourly loop) and client (stamp-gated per-command sweep + `gc` command). |
 | `serve/` | jobs-server composition: iroh Router × 5 ALPNs, embedded NATS + embedded store, build/admin API handlers, bootstrap seeding, GC runner (thin `gcsweep` adapter to `api.GCStats`). |
 | `runnerd/` | jobs-runner daemon: boot self-test build gate, lane consumers per fitting size class, admission accounting, pull-inputs → drive stage → push-outputs → result-before-ack (MsgId dedup). |
 | `amberiroh` (external) | Store sync over iroh QUIC, imported from **`github.com/amber-store/transport-iroh/amberiroh`** — the facade over transport-iroh's `protocol`, `wantsync`, `server` and `relaymode`. This repo carried a vendored copy from 2026-07-27 to 2026-09-07; it is gone and must not come back: protocol or server changes land upstream first, then the pin here is bumped. Wire protocol (length-prefixed CBOR frames, amberpack payloads chunked into `TData`), the have/want transfer loop, and the `Server` that `serve/` mounts on `jobs-runner-amber/1.0` + `jobs-amber-admin/1.0` through `HandleStream` — the router owns dispatch. `ALPN` (`amber-store-iroh/1`) is a **wire constant**: renaming it breaks every peer. TAccept/TRef advertise per-endpoint `DataEndpoints` records (identity + candidates); their presence signals the 10s attach gather window. TPin pin-asserts + OnAccess/OnPin/RefGuard hooks for the GC tracker/collector. |
 | `amberclient/` | Importable amber sync client over `amberiroh`: dial by endpoint ID, Push/Pull (+WithProgress), refs list. Transfers are sharded (`Conns`, default 4): extra QUIC connections attach to the server's transfer token, want rounds deal across all channels; degrades to the single control stream. Shard dials authenticate the advertised data-endpoint identity and, on discovery dials, bind the relay/net-report stack to hole-punch; extras are skipped (not demoted) while the control path is relayed. Shard conns are pooled (punch once, reuse; grow to PoolMax=12 under concurrency — growth dials in the background, never on a transfer's critical path; shrink after idle). Transfers are reserve-first once the server's data endpoints are cached: DataConns promises only reserved **direct-path** entries; relayed entries are parked (held for the punch, never dealt to, abandoned after ~5 min), so small transfers ride the direct control stream instead of relay shards. |
-| `runner/` | Ported stage drivers + sandbox executors; local build/run pipeline (`driveFStages`), develop PTY shell, OCI image export (single-layer docker-load tar + two-layer `AssembleOCIImage` for the registry). |
+| `runner/` | Ported stage drivers + sandbox executors; local build/run pipeline (`driveFStages`), develop PTY shell, OCI image export (single-layer docker-load tar + two-layer `AssembleOCIImage` for the registry). `RunTest` (the buildrun assembly over `build-pinned:<KT>`, no output, bounded by the pinned `timeout` — default 5m — and `test-passed:<KT>` on exit 0) + the local test pipeline (`TestFromSource` → `driveTestStages`); `loadBuildFromEnv` reads a test F-tree's top-level `TESTS.jobs` and sets `Test`, which `RunPin` turns into `recipe.EvalTest`. |
 | `registryd/` | jobs-registry daemon: read-only OCI Distribution API (images named `jobs:<K>` — one repo, tags are build keys), on-demand K→F resolve + amberclient sync into a private store, two-layer image assembly (shell baked by default like `run`/`image`), uncompressed layers streamed from the CAS per request (never cached; the record's layer recipes are the index), manifest/config blob cache with last-read TTL sweep, offline reassembly from records. Pins served images on the server (TPin, hourly re-assert). |
 | `clientcli/` | jobs-client command surface: local + remote commands, store flock, liveView TTY progress (NO_COLOR-aware). `contextroot.go` owns source resolution — `repoRoot` (pure `.git` walk, the ONLY repo detection; no `git` subprocess), `defaultSource` (cwd walk-up for an omitted `--source`), `resolveContextRoot` (re-anchor to the context root). Local and remote MUST both go through `resolveSource` in that order or the local↔remote F join breaks. |
 | `tui/` | bubbletea admin TUI over `jobs-admin/1.0` (builds watch/logs/cancel/delete, fleet, stats, refs) + the standalone build view (`RunBuildWatch` over the `BuildStreams` seam; `buildtree.go` folds `NodeSnap.Deps` into logical rows) that remote-build/watch run on a TTY. Never block in Update — network I/O only inside tea.Cmd goroutines. |
@@ -190,6 +190,13 @@ the outward one.
     [--shell-ref …] [--param k=v]…` — local hermetic build / build-then-exec
     entrypoint / interactive PTY shell in the build sandbox (flock held for the
     whole session).
+  - `test [--source <dir>] [--dir …] [--test-file …] [--platform …] [--param k=v]…`
+    — run the directory's `TESTS.jobs` locally (context search looks for
+    `TESTS.jobs`); builds every input the recipe names (the predeclared
+    `build` = this directory's own build), memo-hits `test-passed:<KT>` or
+    runs and records it, under the recipe's `timeout` (default 5m — a hung
+    test is killed and fails). Prints `test: <F>` / `passed: <KT>`; a failing
+    test is exit 1.
   - `image -o <tar> [--tag …] [--no-shell] [--source <dir>] [<build-K>]` —
     docker-loadable OCI image from a build output. The **positional key** picks
     the mode: given one, image it as-is; given none, build `--source` (the two
@@ -204,8 +211,13 @@ the outward one.
     pull, failure stays for inspection (then exit 1). `--no-tui`, non-TTY,
     old servers (no `NodeSnap.Deps`) and already-terminal requests fall
     back to the classic block view, where `--no-logs` still applies.
+  - `remote-test --server <id> [--source <dir>] [--test-file …] …` — the
+    `remote-build` flow for a test definition; on `done` pulls `build-from:K`
+    + `test-passed:F` home and writes `test-passed:<KT>` locally so a later
+    local `test` memo-joins. Views name the request a test; `status` has a
+    KIND column.
   - `watch --server <id> --request-id <id> [--no-logs] [--no-tui]` —
-    re-attach to a build; same TUI/fallback matrix minus the pull.
+    re-attach to a build or test; same TUI/fallback matrix minus the pull.
   - `logs --server <id> --node <name> [--follow]` — one node's captured
     output (stored head/gap/tail, raw bytes on stdout); `--follow` keeps
     streaming live chunks until interrupted.
@@ -249,7 +261,7 @@ Every `main()` and every sandbox-driving `TestMain` must call
   before output, aliases before the buildvalue goes done. Derived refs
   (`pin-cover/<v>:F`, `kp-tree/<KP>`, `build-pinned:<KP>`, `f-tree/<F>`)
   re-derive on demand — absence after done is a crash window, never a
-  failure. Old runners are fenced by the `jobs-runner-nats/3.0` ALPN — bump
+  failure. Old runners are fenced by the `jobs-runner-nats/4.0` ALPN — bump
   it again whenever an old runner would produce wrong results rather than
   clean errors.
 - **Source closure** (docs/design/2026-07-27-source-closure.md): `closure=`
@@ -259,7 +271,22 @@ Every `main()` and every sandbox-driving `TestMain` must call
   cover the build dir (the sandbox workdir must exist). goplugin's
   `go_closure` kwarg computes it (pure-Go transitive import walk;
   module-root packages enumerate files + embed globs). No `KPVersion` bump
-  (existing derivations are byte-identical); the `/3.0` ALPN is the fence.
+  (existing derivations are byte-identical); the `/3.0` ALPN was the fence.
+- **Tests** (docs/design/2026-11-07-tests.md): `Definition.Test` selects a
+  test; the test F-tree ALWAYS splices the recipe as top-level `TESTS.jobs`
+  (the entry IS the mode marker — never omit it to preserve a join); the
+  stages buildfrom/pluginresolve/pin are shared with builds, `testrun` is
+  keyed by **KT** = `{TestJob job.cbor, platform, v, src/ from the KP tree}`
+  with inputs resolved to CONTENT keys (never definitions — that is the
+  whole point: the `build` input's definition changes every commit, its
+  output does not); resources and `timeout` are excluded from KT. A test run
+  is bounded by `Pinned.TimeoutSec` (`timeout` on `test()`, default
+  `runner.DefaultTestTimeout` = 5m; `build()` rejects the field): the
+  sandbox is killed at the deadline, a hard failure, no ref. `test-passed:<KT>` is
+  doneness AND memo, `test-passed:F` the alias (written before the testvalue
+  goes done); a failed test leaves no ref. `build-pinned:<KT>` / `kt-tree/<KT>`
+  are derived refs (re-derive on demand). The `/4.0` ALPN is the fence: an
+  old runner's buildfrom would bind `build-from:K_test` to the BUILD's F.
 - **GC expiry is rebuild-safe**: deleting a cold output ref un-memoizes,
   never corrupts (doneness = ref existence); bootstrap seeds and pinned
   refs never expire; every ref PUT goes through the collector's PrepareRef
