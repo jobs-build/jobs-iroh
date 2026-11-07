@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.36.0 — 2026-11-07
 
 - **Tests.** A `TESTS.jobs` next to `BUILD.jobs` defines `test()` (the
   `build()` struct without `runtime_deps`; `plugins()` as for builds) and
