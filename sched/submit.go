@@ -31,7 +31,8 @@ type request struct {
 	res       resources.Resources
 	createdNs int64
 	cancelled bool
-	target    *node // the buildvalue/K value node
+	target    *node // the buildvalue/K (testvalue/K) value node
+	test      bool  // a test submit (tests design §5): the target is a testvalue
 	// failReason marks a request-level failure that belongs to no single
 	// node (the no-runners watchdog, issue #8); non-empty ⇒ phase "failed".
 	failReason string
@@ -115,8 +116,13 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 		return api.Submitted{}, internal("submit: ingested key %s does not match definition key", k)
 	}
 	// Bookkeeping ref for submitted roots (def durability + by-key tooling);
-	// unfold-discovered defs live inside their parents' pinned trees.
-	if err := s.store.PutRef(ctx, "build:"+k.String(), k); err != nil {
+	// unfold-discovered defs live inside their parents' pinned trees. A test
+	// root is test:K — the registry's tag listing skips those Ks.
+	what, kind, book := "build", wire.KindBuildValue, "build:"
+	if def.Test {
+		what, kind, book = "test", wire.KindTestValue, "test:"
+	}
+	if err := s.store.PutRef(ctx, book+k.String(), k); err != nil {
 		return api.Submitted{}, internal("submit: bookkeeping ref: %v", err)
 	}
 
@@ -136,12 +142,13 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 		platform:  def.Platform,
 		res:       reqRes,
 		createdNs: time.Now().UnixNano(),
+		test:      def.Test,
 	}
 	// Register the request BEFORE the graph unfolds: requirementLocked
 	// consults s.requests, so the very first enqueue already carries the
 	// request's resources.
 	s.requests[id] = r
-	r.target = s.require(wire.KindBuildValue, k, req.Def, def.Platform, nil, map[string]struct{}{id: {}}, req.Label)
+	r.target = s.require(kind, k, req.Def, def.Platform, nil, map[string]struct{}{id: {}}, req.Label)
 	snap := s.assembleLocked(r)
 	// No-runners rejection (issue #8): a build that still needs runner work
 	// on a platform with no live runner would stall forever — reject it now.
@@ -154,7 +161,7 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 		delete(s.requests, id)
 		s.mu.Unlock()
 		return api.Submitted{}, &Error{Code: api.CodeUnavailable,
-			Text: fmt.Sprintf("no live runners for platform %s — build rejected (attach a runner and resubmit)", def.Platform)}
+			Text: fmt.Sprintf("no live runners for platform %s — %s rejected (attach a runner and resubmit)", def.Platform, what)}
 	}
 	s.putRequestStatusLocked(r, snap)
 	s.bumpLocked()
@@ -174,7 +181,7 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 		}
 	}
 
-	s.log.Info("build submitted", "request", id, "k", k.String(), "platform", def.Platform)
+	s.log.Info(what+" submitted", "request", id, "k", k.String(), "platform", def.Platform)
 	return api.Submitted{RequestID: id, K: k[:]}, nil
 }
 
@@ -300,6 +307,7 @@ func (s *Sched) Requests() []api.RequestInfo {
 			Phase:     snap.Phase,
 			Counts:    snap.Counts,
 			CreatedNs: r.createdNs,
+			Test:      r.test,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -579,8 +587,12 @@ func (s *Sched) checkNoRunnersLocked(now time.Time) {
 		if now.Sub(r.noRunnersSince) < s.noRunnerAfter {
 			continue
 		}
-		r.failReason = fmt.Sprintf("no live runners for platform %s for %s — build failed (attach a runner and resubmit)",
-			r.platform, now.Sub(r.noRunnersSince).Round(time.Second))
+		what := "build"
+		if r.test {
+			what = "test"
+		}
+		r.failReason = fmt.Sprintf("no live runners for platform %s for %s — %s failed (attach a runner and resubmit)",
+			r.platform, now.Sub(r.noRunnersSince).Round(time.Second), what)
 		s.dropInterestLocked(r.id, r.target)
 		s.bumpLocked()
 		s.log.Warn("request failed: no runners for platform",

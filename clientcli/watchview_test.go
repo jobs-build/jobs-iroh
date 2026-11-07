@@ -94,17 +94,17 @@ func TestSnapshotBlockCapsRows(t *testing.T) {
 // on a color view.
 func TestWatchSummaryVerdicts(t *testing.T) {
 	plain := &liveView{}
-	if got := watchSummary(plain, "done", 5*time.Second); got != "build: DONE · 5s" {
+	if got := watchSummary(plain, api.Snapshot{Phase: "done"}, 5*time.Second); got != "build: DONE · 5s" {
 		t.Fatalf("done summary = %q", got)
 	}
-	if got := watchSummary(plain, "failed", time.Second); got != "build: FAILED · 1s" {
+	if got := watchSummary(plain, api.Snapshot{Phase: "failed"}, time.Second); got != "build: FAILED · 1s" {
 		t.Fatalf("failed summary = %q", got)
 	}
-	if got := watchSummary(plain, "cancelled", time.Second); got != "build: CANCELLED · 1s" {
+	if got := watchSummary(plain, api.Snapshot{Phase: "cancelled"}, time.Second); got != "build: CANCELLED · 1s" {
 		t.Fatalf("cancelled summary = %q", got)
 	}
 	color := &liveView{isTTY: true, color: true}
-	if got := watchSummary(color, "failed", time.Second); !strings.Contains(got, "\x1b[31mFAILED\x1b[0m") {
+	if got := watchSummary(color, api.Snapshot{Phase: "failed"}, time.Second); !strings.Contains(got, "\x1b[31mFAILED\x1b[0m") {
 		t.Fatalf("color verdict not painted: %q", got)
 	}
 }
@@ -185,5 +185,16 @@ func TestPrintFailureLogs(t *testing.T) {
 	}
 	if strings.Contains(out, "compiling...") {
 		t.Fatalf("streamed node's log body must not repeat:\n%s", out)
+	}
+}
+
+func TestWatchSummaryAndBlockNameTests(t *testing.T) {
+	plain := &liveView{}
+	snap := api.Snapshot{Phase: "done", Nodes: []api.NodeSnap{{Node: "testvalue_" + strings.Repeat("0", 64), Phase: wire.PhaseDone}}}
+	if got := watchSummary(plain, snap, 5*time.Second); got != "test: DONE · 5s" {
+		t.Fatalf("watchSummary(test) = %q", got)
+	}
+	if lines := snapshotBlock(snap, time.Second); !strings.HasPrefix(lines[0], "[test] done") {
+		t.Fatalf("block header = %q", lines[0])
 	}
 }

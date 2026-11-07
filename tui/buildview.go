@@ -626,13 +626,13 @@ func (m buildView) headerLine() string {
 func (m buildView) footerLine() string {
 	switch {
 	case m.confirm:
-		return styleError.Render("cancel the build? y = yes · any other key = no")
+		return styleError.Render("cancel the " + RequestKind(m.snap) + "? y = yes · any other key = no")
 	case m.watchErr != nil:
 		return styleError.Render(fmt.Sprintf("watch stream down: %v — retrying", m.watchErr))
 	case m.cancelErr != nil:
 		return styleError.Render(fmt.Sprintf("cancel failed: %v", m.cancelErr))
 	case m.terminal:
-		return phaseStyle(m.snap.Phase).Render("build "+strings.ToUpper(m.snap.Phase)) +
+		return phaseStyle(m.snap.Phase).Render(RequestKind(m.snap)+" "+strings.ToUpper(m.snap.Phase)) +
 			styleFaint.Render(" · ↑↓ inspect · enter fold · o output · q quit")
 	case m.cancelSent:
 		return styleFaint.Render("cancel sent — waiting for the server…")

@@ -318,3 +318,34 @@ func TestContextLine(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultSourceTestsRecipe(t *testing.T) {
+	// A test command searches for TESTS.jobs: a directory holding only a
+	// BUILD.jobs is passed over for the nearest ancestor with TESTS.jobs.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(root, "svc")
+	if err := os.MkdirAll(filepath.Join(svc, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(root, "TESTS.jobs"), filepath.Join(svc, "BUILD.jobs")} {
+		if err := os.WriteFile(p, []byte("#"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := defaultSource(filepath.Join(svc, "pkg"), "", "", "TESTS.jobs", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != root {
+		t.Fatalf("defaultSource(TESTS.jobs) = %s, want the repo root %s (svc has only BUILD.jobs)", got, root)
+	}
+	if _, err := defaultSource(filepath.Join(svc, "pkg"), "", "", "BUILD.jobs", false); err != nil {
+		t.Fatalf("BUILD.jobs search: %v", err)
+	}
+	if got := contextLine(root, "", "TESTS.jobs"); got != "context: "+root+"  (dir ., recipe TESTS.jobs)" {
+		t.Fatalf("contextLine = %q", got)
+	}
+}

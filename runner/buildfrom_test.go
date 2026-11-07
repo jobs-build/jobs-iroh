@@ -179,3 +179,71 @@ func TestRunBuildFrom_buildFileMissingFails(t *testing.T) {
 		t.Fatalf("RunBuildFrom with a missing build_file must fail, got %+v", out)
 	}
 }
+
+func TestRunBuildFrom_testDefinitionSplicesTestsJobs(t *testing.T) {
+	ctx := context.Background()
+	st := buildEvalStore(t)
+	platform := runner.Platform()
+
+	tree := ingestSourceTree(t, ctx, st, map[string]string{
+		"BUILD.jobs": "def build(): return struct(inputs={}, env={}, script=\"\", runtime_deps=[])\n",
+		"TESTS.jobs": "def test(): return struct(inputs={}, env={}, script=\"true\")\n",
+	})
+	src, err := builddef.TreeInput(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, _ := importdef.CanonicalParams(nil)
+	def := builddef.Definition{Source: src, Platform: platform, Params: params, Test: true}
+	canon, err := def.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := st.IngestFile(ctx, canon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brc := runner.BuildRunCfg{Platform: platform, CacheDir: t.TempDir()}
+	out := runner.RunBuildFrom(ctx, st, runner.NewLocalRefWriter(st), brc, k)
+	if out.Failed || out.Decline || out.Cancelled {
+		t.Fatalf("RunBuildFrom: %+v", out)
+	}
+	f := out.OutputKey
+	rk, ok, err := st.TreeSubdir(ctx, f, "TESTS.jobs")
+	if err != nil || !ok {
+		t.Fatalf("test F-tree has no TESTS.jobs entry (ok=%v err=%v)", ok, err)
+	}
+	b, err := st.ReadFile(ctx, rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "def test(): return struct(inputs={}, env={}, script=\"true\")\n" {
+		t.Fatalf("spliced recipe = %q", b)
+	}
+	if _, ok, _ := st.TreeSubdir(ctx, f, "BUILD.jobs"); ok {
+		t.Fatal("test F-tree carries a BUILD.jobs override")
+	}
+
+	// The same tree as a BUILD definition yields a different F.
+	bdef := def
+	bdef.Test = false
+	bcanon, _ := bdef.Canonical()
+	bk, _ := st.IngestFile(ctx, bcanon)
+	bout := runner.RunBuildFrom(ctx, st, runner.NewLocalRefWriter(st), brc, bk)
+	if bout.Failed || bout.OutputKey == f {
+		t.Fatalf("build F %s equals test F %s (failed=%v)", bout.OutputKey, f, bout.Failed)
+	}
+
+	// A test def whose build root has no TESTS.jobs is a hard failure — no
+	// silent fallback to BUILD.jobs.
+	noTests := ingestSourceTree(t, ctx, st, map[string]string{
+		"BUILD.jobs": "def build(): return struct(inputs={}, env={}, script=\"\", runtime_deps=[])\n",
+	})
+	src2, _ := builddef.TreeInput(noTests)
+	canon2, _ := (builddef.Definition{Source: src2, Platform: platform, Params: params, Test: true}).Canonical()
+	k2, _ := st.IngestFile(ctx, canon2)
+	out2 := runner.RunBuildFrom(ctx, st, runner.NewLocalRefWriter(st), brc, k2)
+	if !out2.Failed || out2.Class != "hard" {
+		t.Fatalf("missing TESTS.jobs: %+v, want hard failure", out2)
+	}
+}

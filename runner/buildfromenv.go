@@ -7,6 +7,7 @@ import (
 
 	"github.com/amber-store/core/key"
 	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/builddef"
 	"github.com/jobs-build/jobs-iroh/recipe"
 )
 
@@ -27,11 +28,16 @@ type buildFromEnv struct {
 	Dir              string  // build dir within the context ("" legacy/root)
 	SourceContentKey key.Key // the BUILD ROOT subtree content key (subbuild's anchor)
 	ContextKey       key.Key // the whole-context tree key (zero for legacy F-trees)
-	cleanup          func()
+	// Test marks a TEST F-tree (tests design §4.1): the recipe is the
+	// top-level TESTS.jobs entry (always spliced — its presence IS the
+	// marker) and the eval stages call test() with `build` predeclared.
+	Test    bool
+	cleanup func()
 }
 
 // loadBuildFromEnv tars the whole build-from tree at f to disk and reads its
-// pieces. The recipe is the top-level BUILD.jobs override if present, else
+// pieces. The recipe is the top-level TESTS.jobs entry of a test F-tree,
+// else the top-level BUILD.jobs override if present, else
 // <build root>/BUILD.jobs. Returns a *Outcome on error (the cleanup is a
 // no-op then).
 func loadBuildFromEnv(ctx context.Context, st *amber.Store, f key.Key) (buildFromEnv, *Outcome) {
@@ -106,7 +112,10 @@ func loadBuildFromEnv(ctx context.Context, st *amber.Store, f key.Key) (buildFro
 	}
 
 	var recipeSrc []byte
-	if b, err := os.ReadFile(filepath.Join(root, "BUILD.jobs")); err == nil {
+	test := false
+	if b, err := os.ReadFile(filepath.Join(root, builddef.TestsFile)); err == nil {
+		recipeSrc, test = b, true // a test F-tree: always spliced
+	} else if b, err := os.ReadFile(filepath.Join(root, "BUILD.jobs")); err == nil {
 		recipeSrc = b // top-level override
 	} else if b, err := src.Read("BUILD.jobs"); err == nil {
 		recipeSrc = b // <build root>/BUILD.jobs
@@ -126,6 +135,7 @@ func loadBuildFromEnv(ctx context.Context, st *amber.Store, f key.Key) (buildFro
 		Dir:              dir,
 		SourceContentKey: srcContentKey,
 		ContextKey:       contextKey,
+		Test:             test,
 		cleanup:          cleanup,
 	}, nil
 }

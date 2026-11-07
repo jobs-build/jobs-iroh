@@ -163,3 +163,63 @@ func TestDefinition_ParamsValue(t *testing.T) {
 		t.Fatalf("ParamsValue=%#v", v)
 	}
 }
+
+func TestDefinition_TestFlagChangesKAndRoundTrips(t *testing.T) {
+	src := importInput(t, "github", "https://github.com/o/r")
+	p, err := importdef.CanonicalParams(map[string]any{"opt": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := Definition{Source: src, Dir: "sub", Platform: "linux/amd64", Params: p, Ctx: CtxWidened}
+	test := build
+	test.Test = true
+	bc, err := build.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc, err := test.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(bc, tc) {
+		t.Fatal("test definition encodes identically to the build definition")
+	}
+	// A build definition never carries the field: its bytes (and K) are
+	// unchanged by the field's existence.
+	if bytes.Contains(bc, []byte("test")) {
+		t.Fatalf("build definition carries a test field: %x", bc)
+	}
+	got, err := DecodeDefinition(tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Test || got.Dir != "sub" || got.Ctx != CtxWidened {
+		t.Fatalf("decoded mismatch: %+v", got)
+	}
+	// Re-canonicalizing a decoded test def is a byte-identical fixpoint —
+	// the submit canonicality check depends on Canonical copying the field.
+	again, err := got.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(again, tc) {
+		t.Fatal("Canonical() strips the test field")
+	}
+}
+
+func TestDefinition_RecipeFile(t *testing.T) {
+	cases := []struct {
+		def  Definition
+		want string
+	}{
+		{Definition{}, "BUILD.jobs"},
+		{Definition{Test: true}, "TESTS.jobs"},
+		{Definition{BuildFile: "x/other.jobs"}, "x/other.jobs"},
+		{Definition{Test: true, BuildFile: "smoke.jobs"}, "smoke.jobs"},
+	}
+	for _, c := range cases {
+		if got := c.def.RecipeFile(); got != c.want {
+			t.Errorf("RecipeFile(%+v) = %q, want %q", c.def, got, c.want)
+		}
+	}
+}

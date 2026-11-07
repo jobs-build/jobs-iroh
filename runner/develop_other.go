@@ -21,6 +21,7 @@ type DevelopConfig struct {
 	ShellRef  string
 	CacheDir  string
 	Secrets   map[string]TagSecret
+	Test      bool
 }
 
 // RunDevelop is unsupported off Linux (the hermetic sandbox is Linux-only).

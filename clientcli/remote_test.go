@@ -13,6 +13,7 @@ import (
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/api"
 	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/cover"
 	"github.com/jobs-build/jobs-iroh/serve"
 	"github.com/jobs-build/jobs-iroh/wire"
 )
@@ -267,5 +268,137 @@ func TestRemoteBuildEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(lgErr.String(), "(no captured output)") {
 		t.Fatalf("logs stderr missing empty-view note:\n%s", lgErr.String())
+	}
+}
+
+// TestRemoteTestEndToEnd drives remote-test against a real server with a
+// pre-seeded passed test (no runner): the test definition's K is what the
+// server fast-paths on, the verdict names the request a test, and the
+// memo (test-passed:F → KT, plus test-passed:<KT>) is pulled home.
+func TestRemoteTestEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	ready := make(chan *serve.Server, 1)
+	done := make(chan error, 1)
+	srvCtx, stopSrv := context.WithCancel(ctx)
+	t.Cleanup(func() {
+		stopSrv()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("server run: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Error("server did not shut down")
+		}
+	})
+	go func() {
+		done <- serve.Run(srvCtx, serve.Options{
+			DataDir:  t.TempDir(),
+			BindAddr: netip.AddrPortFrom(netip.IPv6Loopback(), 0),
+			Ready:    func(s *serve.Server) { ready <- s },
+		})
+	}()
+	var srv *serve.Server
+	select {
+	case srv = <-ready:
+	case <-time.After(30 * time.Second):
+		t.Fatal("server not ready")
+	}
+	serverID := srv.Endpoint.ID().String()
+	serverAddr := srv.Endpoint.LocalAddr().String()
+
+	srcDir := t.TempDir()
+	for name, content := range map[string]string{"BUILD.jobs": "# build\n", "TESTS.jobs": "# tests\n"} {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	treeKey, err := srv.Store.IngestSourceDir(ctx, srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := parseParams(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, k, err := definitionFor(treeKey, "", "", "linux/amd64", params, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, bk, err := treeDefinition(treeKey, "", "", "linux/amd64", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k == bk {
+		t.Fatal("test definition has the build's K")
+	}
+	// Pre-seed a passed test: build-from:K → F, test-passed:F → KT (any
+	// complete tree stands in for the KT tree).
+	ktDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ktDir, "job.cbor"), []byte("kt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kt, err := srv.Store.IngestDir(ctx, ktDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := treeKey // stand-in F
+	if err := srv.Store.PutRef(ctx, "build-from:"+k.String(), f); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Store.PutRef(ctx, cover.TestPassedRef(f), kt); err != nil {
+		t.Fatal(err)
+	}
+
+	dataDir := t.TempDir()
+	app := App()
+	var out, errOut bytes.Buffer
+	app.Writer = &out
+	app.ErrWriter = &errOut
+	err = app.RunContext(ctx, []string{"jobs-client", "remote-test",
+		"--server", serverID,
+		"--addr", serverAddr,
+		"--data-dir", dataDir,
+		"--source", srcDir,
+		"--platform", "linux/amd64",
+	})
+	if err != nil {
+		t.Fatalf("remote-test: %v\nstderr:\n%s", err, errOut.String())
+	}
+	if !strings.Contains(out.String(), "test:   "+f.String()) || !strings.Contains(out.String(), "passed: "+kt.String()) {
+		t.Fatalf("stdout missing test/passed keys:\n%s\nstderr:\n%s", out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "(test "+k.String()+")") {
+		t.Fatalf("stderr missing the test submit line:\n%s", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "test: DONE · ") {
+		t.Fatalf("stderr missing the test verdict line:\n%s", errOut.String())
+	}
+
+	// The memo was pulled home: the F alias and the KT-level marker.
+	cst, err := amber.Open(filepath.Join(dataDir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cst.Close()
+	for _, name := range []string{cover.TestPassedRef(f), cover.TestPassedRef(kt)} {
+		got, ok, err := cst.GetKey(ctx, name)
+		if err != nil || !ok || got != kt {
+			t.Fatalf("local %s: key=%s ok=%v err=%v (want %s)", name, got, ok, err, kt)
+		}
+	}
+
+	// status marks the request as a test.
+	stApp := App()
+	var stOut, stErr bytes.Buffer
+	stApp.Writer = &stOut
+	stApp.ErrWriter = &stErr
+	if err := stApp.RunContext(ctx, []string{"jobs-client", "status", "--server", serverID, "--addr", serverAddr}); err != nil {
+		t.Fatalf("status: %v\nstderr:\n%s", err, stErr.String())
+	}
+	if !strings.Contains(stOut.String(), "KIND") || !strings.Contains(stOut.String(), "  test  ") {
+		t.Fatalf("status output lacks the test kind:\n%s", stOut.String())
 	}
 }

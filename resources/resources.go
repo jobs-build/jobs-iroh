@@ -31,6 +31,7 @@ const (
 	KindBuildPluginResolve = "build-plugin-resolve"
 	KindBuildPin           = "build-pin"
 	KindBuild              = "build"
+	KindTest               = "test"
 )
 
 // Per-kind default requirements (multi-job-runner design). Imports and the three
@@ -47,7 +48,8 @@ func DefaultFor(kind string) Resources {
 	switch kind {
 	case KindImport:
 		return DefaultImport
-	case KindBuild:
+	case KindBuild, KindTest:
+		// A test run is a build run that keeps nothing: same heavy floor.
 		return DefaultBuild
 	case KindBuildFrom, KindBuildPluginResolve, KindBuildPin:
 		return DefaultLightBuild

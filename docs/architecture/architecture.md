@@ -33,7 +33,7 @@ Four pillars carry the whole design:
 ```
         jobs-client                          jobs-runner (×N)
    private store (flock)                private store + sandbox
-        │ jobs-build/1.0                      │ jobs-runner-nats/3.0
+        │ jobs-build/1.0                      │ jobs-runner-nats/4.0
         │ jobs-admin/1.0                      │ jobs-runner-amber/1.0
         │ jobs-amber-admin/1.0                │
         └───────────────┐        ┌────────────┘
@@ -62,8 +62,8 @@ runner it is purely a dial-side peer: a private store synced on demand over
 
 | ALPN | Peer | Purpose |
 |---|---|---|
-| `jobs-build/1.0` | client | submit a build, watch progress, fetch logs, cancel |
-| `jobs-runner-nats/3.0` | runner | NATS tunnel — each stream proxies to the embedded NATS server |
+| `jobs-build/1.0` | client | submit a build or test, watch progress, fetch logs, cancel |
+| `jobs-runner-nats/4.0` | runner | NATS tunnel — each stream proxies to the embedded NATS server |
 | `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
 | `jobs-admin/1.0` | client / TUI | requests, fleet, stats, refs browse, cancel/delete, diagnose |
 | `jobs-amber-admin/1.0` | client / registry | store sync — push source trees up, pull outputs (and images-to-be) home |
@@ -179,6 +179,19 @@ Plugins are sandboxed helper binaries (`./plugin`, CBOR over stdio, exit 75
 Go plugin turns a `go.sum` into one module-proxy import per dependency, so
 every module is its own cached, content-addressed fetch.
 
+**Tests** ([tests design](../design/2026-11-07-tests.md)) are a second
+recipe, `TESTS.jobs`, next to `BUILD.jobs`. It defines `test()` — the same
+struct as `build()` minus `runtime_deps` (an error if present) — and may
+define `plugins()` exactly like a build. One extra predeclared symbol,
+`build`, is an Input naming **this directory's own build** (same context,
+dir, platform and params, default `BUILD.jobs`) — the very definition
+`jobs-client build`/`remote-build` of that directory constructs, so a test
+that lists it (`inputs = {"app": build}`) joins the user's build node and
+finds the artifact at `/jobs/store/<BOK>` through `JOBS_DEPS`. A test
+produces no output: `$out` exists and is discarded; exit 0 is a pass,
+anything else a hard failure. Passes are recorded so an unchanged test never
+runs twice (§3.2, §3.3).
+
 ### 3.2 The stage pipeline
 
 Every build value is produced by a fixed pipeline of stages. Five stage
@@ -193,10 +206,31 @@ is a server-internal orchestrator that walks its build's stages sequentially
 | `pluginresolve` | F | evaluates `plugins()` (no plugins callable there), ingests plugin/dep definitions | `build-plugin-resolved:F` |
 | `pin` | F | materializes resolution deps, evaluates `build()` with **sandboxed** plugin callers, validates | `build-pinned:F` |
 | `buildrun` | F | resolves every input's output + runtime closure, assembles the read-only store union, runs the script hermetically | `[build-cache:…]*, build-output-deps:F, build-output:F` (ordered) |
+| `testrun` | KT | the buildrun assembly and sandbox over `build-pinned:<KT>`, under the pinned `timeout` (default 5m); keeps nothing — exit 0 records the pass, a timeout is a hard failure | `[build-cache:…]*, test-passed:<KT>` |
 
 The *pinned* job (`build-pinned:F`) is the fully resolved description —
-concrete inputs, env, script, runtime-dep keys, caches, resources — the
-thing `buildrun` actually executes.
+concrete inputs, env, script, runtime-dep keys, caches, resources, a test's
+timeout — the thing `buildrun` actually executes.
+
+A **test** shares `buildfrom`, `pluginresolve` and `pin` with builds (the
+test F-tree carries its recipe as a top-level `TESTS.jobs` entry — always
+spliced, since the entry is the mode marker the eval stages branch on — so a
+test's F never collides with a build's) and ends in `testrun`, driven by a
+`testvalue` orchestrator. Its run identity is **not** KP: a pinned job names
+inputs by *definition*, and the `build` input's definition embeds the whole
+source tree, so every commit would re-key the test even when the build
+output is a memo hit. Instead the testvalue requires every pinned input
+itself, waits for them, and derives **KT** = key of `{job.cbor, platform,
+v, src/}` where `src/` is the KP tree's covered source and `job.cbor` is a
+`TestJob` — script, env, dir, cache ids, and the inputs **resolved to
+content keys** (the `c/` artifact + runtime-closure tree of a build, the
+output tree of an import). Resources and the timeout are left out on
+purpose. A test re-runs
+iff its script, environment, covered sources, platform or any input's
+*bytes* changed; a docs-only commit re-keys K and F, re-runs the cheap eval
+stages, memo-hits the build on KP and the test on KT. `cover.DeriveTest` is
+the single, identity-critical derivation the server and the local pipeline
+share, like `cover.Derive` for KP.
 
 ### 3.3 Ref namespaces
 
@@ -215,6 +249,10 @@ The store's named refs are the entire system state:
 | `build-cache:<id>:<platform>` | mutable persistent cache state (e.g. a module cache) |
 | `fetcher:<name>:<platform>`, `shell:<platform>` | bootstrap seed artifacts |
 | `seed-src:<ref>:<hash8>` | per-blob seeding idempotence marker |
+| `test:K` | a submitted test definition (the `build:K` analogue; the registry's tag listing skips these Ks) |
+| `build-pinned:<KT>`, `kt-tree/<KT>` | the pinned test under its run key + the KT tree's pull carrier (server-derived, re-derived on demand) |
+| `test-passed:<KT>` | KT — **the test doneness marker and memo**; absent for a failed test, so it re-runs on the next submit |
+| `test-passed:<F>` | KT — the F-level alias the testvalue fast-path and `remote-test`'s pull-home read |
 
 ### 3.4 Correctness invariants
 
@@ -229,9 +267,10 @@ The store's named refs are the entire system state:
   per-stage allow-table: each stage kind may publish only its own names
   (§3.2); `build-from:K` and `build-from-tree:F` must appear in the same
   batch and cross-check; `build-cache:<id>` is accepted only for cache ids
-  declared in the pinned job; batches commit in payload order (caches →
-  `build-output-deps:F` → `build-output:F` last, so the doneness marker is
-  written last); anything else fails closed.
+  declared in the pinned job (buildrun and testrun alike); batches commit in
+  payload order (caches → `build-output-deps:F` → `build-output:F` last, so
+  the doneness marker is written last; a testrun's `test-passed:<KT>` last
+  likewise); anything else fails closed.
 - **Refs are unsigned** (`{name, key, createdAt}`, last-write-wins). There is
   no signing or grant layer; transport identity is the iroh endpoint key
   (§10).
@@ -350,8 +389,13 @@ the join — two requests needing the same subtree converge on the same node
 with zero coordination. States: `waiting → ready → queued → running →
 publishing → done | failed`. Unfolding is per kind: imports depend on their
 fetcher's build; buildfrom on its source value; pin reads
-`build-plugin-resolved:F`; buildrun reads `build-pinned:F`. Definitions
-travel in-band inside job messages, so a runner never misses a def read.
+`build-plugin-resolved:F`; buildrun and testrun read `build-pinned:<key>`.
+A `testvalue` (the test orchestrator, §3.2) walks buildfrom → pluginresolve
+→ pin like a buildvalue, then requires every pinned input *under itself*,
+derives KT once they are all done, requires `testrun(KT)` — whose doneness
+fast-path on `test-passed:<KT>` is the memo — and writes the
+`test-passed:F` alias before going done. Definitions travel in-band inside
+job messages, so a runner never misses a def read.
 Requests hold *interest* in nodes; cancellation drops interest, and a node
 with no interest is dropped from memory, its queued job message best-effort
 deleted from the work queue. An attempt already in a runner completes and
@@ -547,6 +591,11 @@ everywhere, so caches join across machines by construction.
 - `image` assembles a reproducible single-layer OCI tarball (epoch-zero
   timestamps) from the artifact + runtime closure, loadable with
   `docker load`.
+- `test` runs the directory's `TESTS.jobs` through the same local pipeline
+  (the context search looks for `TESTS.jobs`; `--test-file` overrides),
+  building every input the recipe names — the directory's own build when
+  listed — and either memo-hits `test-passed:<KT>` or runs the test and
+  records it. Prints the test identity F and the run identity KT.
 
 **Remote builds** (`remote-build`): ingest the source tree locally → push it
 under a client scratch ref over `jobs-amber-admin/1.0` → submit the
@@ -557,6 +606,11 @@ running steps' build output streaming alongside by default (`--no-logs` opts
 out) → on success, pull the output and its runtime closure home. SIGINT
 sends a cancel frame and exits 130; a second signal kills. `watch`
 re-attaches to a running request; `logs --follow` streams one node's output.
+`remote-test` is the same flow for a test definition: on `done` it pulls
+`build-from:K` (→ F) and `test-passed:F` (→ KT) home and writes
+`test-passed:<KT>` locally, so a later local `test` of the same tree is a
+memo hit at both levels. The watch views name the request by kind (a
+snapshot holding a `testvalue` is a test), and `status` has a KIND column.
 
 ### 10.1 The registry (`jobs-registry`)
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/bootstrap"
+	"github.com/jobs-build/jobs-iroh/builddef"
 	"github.com/jobs-build/jobs-iroh/importdef"
 	"github.com/jobs-build/jobs-iroh/runner"
 )
@@ -30,20 +31,51 @@ type localConfig struct {
 	shellRef   string
 	sourceRoot string
 	noRepoRoot bool
+	// test selects the TEST pipeline (tests design §8): TESTS.jobs is the
+	// recipe searched for and run, --test-file replaces --build-file.
+	test bool
 }
 
-// flags returns the shared flag set, destinations bound to cfg.
+// what names the command's kind in messages: "build" or "test".
+func (cfg *localConfig) what() string {
+	if cfg.test {
+		return "test"
+	}
+	return "build"
+}
+
+// recipeName is the effective recipe file (relative to dir): the explicit
+// flag, else BUILD.jobs for builds and TESTS.jobs for tests — the same
+// default runner's localBuildFrom applies.
+func (cfg *localConfig) recipeName() string {
+	if cfg.buildFile != "" {
+		return cfg.buildFile
+	}
+	if cfg.test {
+		return builddef.TestsFile
+	}
+	return builddef.BuildFile
+}
+
+// flags returns the shared flag set, destinations bound to cfg. The recipe
+// flag follows the kind: --build-file (BUILD.jobs) or --test-file
+// (TESTS.jobs), both landing in cfg.buildFile.
 func (cfg *localConfig) flags() []cli.Flag {
+	what, recipe := cfg.what(), cfg.recipeName()
+	recipeFlag := &cli.StringFlag{Name: "build-file", Usage: "recipe path relative to dir (default BUILD.jobs)", Destination: &cfg.buildFile}
+	if cfg.test {
+		recipeFlag = &cli.StringFlag{Name: "test-file", Usage: "test recipe path relative to dir (default TESTS.jobs)", Destination: &cfg.buildFile}
+	}
 	return []cli.Flag{
 		&cli.StringFlag{Name: "data-dir", EnvVars: []string{"JOBS_DATA_DIR"}, Value: defaultDataDir(), Usage: "client data directory (embedded store + cache)", Destination: &cfg.dataDir},
-		&cli.StringFlag{Name: "source", Usage: "source directory to ingest as the build source (default: the nearest ancestor of the current directory holding BUILD.jobs, searched up to the repo root)", Destination: &cfg.source},
-		&cli.StringFlag{Name: "dir", Usage: "build root within the source (where BUILD.jobs lives)", Destination: &cfg.dir},
-		&cli.StringFlag{Name: "build-file", Usage: "recipe path relative to dir (default BUILD.jobs)", Destination: &cfg.buildFile},
+		&cli.StringFlag{Name: "source", Usage: "source directory to ingest as the " + what + " source (default: the nearest ancestor of the current directory holding " + recipe + ", searched up to the repo root)", Destination: &cfg.source},
+		&cli.StringFlag{Name: "dir", Usage: what + " root within the source (where " + recipe + " lives)", Destination: &cfg.dir},
+		recipeFlag,
 		&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
 		&cli.BoolFlag{Name: "no-repo-root", Usage: "disable the git-root context default (ingest --source itself)", Destination: &cfg.noRepoRoot},
 		&cli.StringFlag{Name: "platform", EnvVars: []string{"JOBS_PLATFORM"}, Value: runner.Platform(), Usage: "target platform, e.g. linux/amd64", Destination: &cfg.platform},
 		&cli.StringFlag{Name: "shell-ref", EnvVars: []string{"JOBS_SHELL_REF"}, Usage: "amber ref for the vendored shell artifact (default shell:<platform>)", Destination: &cfg.shellRef},
-		&cli.StringSliceFlag{Name: "param", Usage: "key=value build param (repeatable)"},
+		&cli.StringSliceFlag{Name: "param", Usage: "key=value " + what + " param (repeatable)"},
 	}
 }
 
@@ -63,12 +95,12 @@ func (cfg *localConfig) effectiveShellRef() string {
 // local↔remote F join depends on it). The resolution is reported on stderr:
 // the ingest root can be an entire repository, so it is always shown.
 func (cfg *localConfig) resolveContext(lv *liveView) error {
-	root, dir, err := resolveSource(cfg.source, cfg.dir, cfg.sourceRoot, cfg.buildFile, cfg.noRepoRoot)
+	root, dir, err := resolveSource(cfg.source, cfg.dir, cfg.sourceRoot, cfg.recipeName(), cfg.noRepoRoot)
 	if err != nil {
 		return err
 	}
 	cfg.source, cfg.dir = root, dir
-	lv.Println(contextLine(cfg.source, cfg.dir, cfg.buildFile))
+	lv.Println(contextLine(cfg.source, cfg.dir, cfg.recipeName()))
 	return nil
 }
 
@@ -83,6 +115,7 @@ func (cfg *localConfig) developConfig(params []byte, cacheDir string) runner.Dev
 		Params:    params,
 		ShellRef:  cfg.shellRef,
 		CacheDir:  cacheDir,
+		Test:      cfg.test,
 	}
 }
 

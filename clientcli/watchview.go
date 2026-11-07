@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/tui"
 	"github.com/jobs-build/jobs-iroh/wire"
 )
 
@@ -37,7 +38,7 @@ func isActivePhase(phase string) bool {
 // with their error summaries.
 func snapshotBlock(snap api.Snapshot, elapsed time.Duration) []string {
 	c := snap.Counts
-	head := fmt.Sprintf("[build] %s · %d/%d done · %d running", snap.Phase, c.Done, c.Total, c.Running)
+	head := fmt.Sprintf("[%s] %s · %d/%d done · %d running", tui.RequestKind(snap), snap.Phase, c.Done, c.Total, c.Running)
 	if c.Failed > 0 {
 		head += fmt.Sprintf(" · %d failed", c.Failed)
 	}
@@ -117,15 +118,15 @@ func snapshotChangeLine(snap api.Snapshot) string {
 
 // watchSummary renders the terminal snapshot's permanent one-line summary
 // (the Collapse line), color-coding the verdict on a color TTY.
-func watchSummary(lv *liveView, phase string, elapsed time.Duration) string {
-	verdict := strings.ToUpper(phase)
-	switch phase {
+func watchSummary(lv *liveView, snap api.Snapshot, elapsed time.Duration) string {
+	verdict := strings.ToUpper(snap.Phase)
+	switch snap.Phase {
 	case "done":
 		verdict = lv.paint(sgrGreen, "DONE")
 	case "failed":
 		verdict = lv.paint(sgrRed, "FAILED")
 	}
-	return fmt.Sprintf("build: %s · %s", verdict, formatDur(elapsed))
+	return fmt.Sprintf("%s: %s · %s", tui.RequestKind(snap), verdict, formatDur(elapsed))
 }
 
 // failureSummary extracts the first hard failure's one-line summary

@@ -14,7 +14,7 @@ import (
 // package's dial plumbing — direct addresses or the discovery stack, all
 // candidates raced — but speaks no amber protocol at all: it is the seam for
 // the OTHER protocols multiplexed on a jobs-server endpoint, e.g. the
-// runner's NATS tunnel (jobs-runner-nats/3.0), whose redial loop needs a
+// runner's NATS tunnel (jobs-runner-nats/4.0), whose redial loop needs a
 // fresh connection per attempt.
 func DialConn(ctx context.Context, o Options) (*iroh.Conn, *iroh.Endpoint, error) {
 	if o.ALPN == "" {

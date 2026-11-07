@@ -32,3 +32,8 @@ func RunFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, extr
 func RunByKey(ctx context.Context, st *amber.Store, k key.Key, platform, shellRef string, extraArgs []string, rio RunIO) (int, error) {
 	return -1, ErrUnsupported
 }
+
+// TestFromSource is unsupported off Linux (the hermetic sandbox is Linux-only).
+func TestFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, p *Progress) (TestOutcome, error) {
+	return TestOutcome{}, ErrUnsupported
+}

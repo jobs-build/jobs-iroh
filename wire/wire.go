@@ -33,7 +33,9 @@ const (
 	subjectRunnerHBFmt  = "runners.%s.hb"
 )
 
-// Node kinds. buildvalue is server-internal (never placed on the queue).
+// Node kinds. buildvalue and testvalue are server-internal (never placed
+// on the queue). A test (tests design §5) shares buildfrom/pluginresolve/pin
+// with builds and ends in a KT-keyed testrun instead of a buildrun.
 const (
 	KindImport        = "import"
 	KindBuildFrom     = "buildfrom"
@@ -41,6 +43,8 @@ const (
 	KindPin           = "pin"
 	KindBuildRun      = "buildrun"
 	KindBuildValue    = "buildvalue"
+	KindTestRun       = "testrun"
+	KindTestValue     = "testvalue"
 )
 
 // Node phases (status KV + snapshots).
@@ -76,7 +80,7 @@ func ParseNodeName(name string) (kind string, k key.Key, err error) {
 	}
 	kind = name[:i]
 	switch kind {
-	case KindImport, KindBuildFrom, KindPluginResolve, KindPin, KindBuildRun, KindBuildValue:
+	case KindImport, KindBuildFrom, KindPluginResolve, KindPin, KindBuildRun, KindBuildValue, KindTestRun, KindTestValue:
 	default:
 		return "", key.Key{}, fmt.Errorf("node name %q: unknown kind", name)
 	}

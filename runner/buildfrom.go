@@ -43,16 +43,26 @@ func RunBuildFrom(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildR
 		return hard("resolving", "dir not found in source: "+err.Error(), 0)
 	}
 
-	override, rerr := resolveRecipeOverride(ctx, st, buildRoot, def.BuildFile, def.BuildJobs)
-	if rerr != nil {
-		return hard("resolving", rerr.Error(), 0)
-	}
-
 	envKey, dirEntry := buildRoot, ""
 	if def.Ctx == builddef.CtxWidened {
 		envKey, dirEntry = contentTree, def.Dir
 	}
-	f, err := st.BuildFromTree(ctx, envKey, dirEntry, def.Params, def.Platform, override)
+	var f key.Key
+	if def.Test {
+		// A test F-tree always splices its recipe as TESTS.jobs (tests
+		// design §4.1) — the entry is the mode marker the eval stages read.
+		recipeSrc, rerr := resolveTestRecipe(ctx, st, buildRoot, def.BuildFile, def.BuildJobs)
+		if rerr != nil {
+			return hard("resolving", rerr.Error(), 0)
+		}
+		f, err = st.TestFromTree(ctx, envKey, dirEntry, def.Params, def.Platform, recipeSrc)
+	} else {
+		override, rerr := resolveRecipeOverride(ctx, st, buildRoot, def.BuildFile, def.BuildJobs)
+		if rerr != nil {
+			return hard("resolving", rerr.Error(), 0)
+		}
+		f, err = st.BuildFromTree(ctx, envKey, dirEntry, def.Params, def.Platform, override)
+	}
 	if err != nil {
 		return retryable("assembling", err)
 	}
@@ -104,6 +114,27 @@ func resolveRecipeOverride(ctx context.Context, st *amber.Store, envKey key.Key,
 		return nil, errors.New("no BUILD.jobs in source and no override/build_file")
 	}
 	return nil, nil
+}
+
+// resolveTestRecipe computes the effective recipe of a TEST (tests design
+// §4.1): the inline override if set, else <root>/<buildFile> when set, else
+// <root>/TESTS.jobs — which MUST exist (no fallback to BUILD.jobs: a build
+// recipe has no test() and the F-tree entry name would lie). Shared by
+// RunBuildFrom (server) and localBuildFrom (local) like resolveRecipeOverride,
+// for the same F-equality reason.
+func resolveTestRecipe(ctx context.Context, st *amber.Store, envKey key.Key, buildFile string, inline []byte) ([]byte, error) {
+	if len(inline) > 0 {
+		return inline, nil
+	}
+	name := buildFile
+	if name == "" {
+		name = builddef.TestsFile
+	}
+	b, err := readTreeFile(ctx, st, envKey, name)
+	if err != nil {
+		return nil, fmt.Errorf("test recipe not found at %q in build root: %w", name, err)
+	}
+	return b, nil
 }
 
 // resolveSourceContentTree resolves a source Input to its CONTENT tree key: the
