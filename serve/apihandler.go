@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strings"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/tmc/go-iroh/iroh"
@@ -160,6 +159,19 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 		svc.log.Info("client cancel", "remote", remote, "request", req.RequestID)
 		_ = api.WriteFrame(stream, api.TOK, nil)
 		return nil
+
+	case api.TRetry:
+		var req api.CancelRequest
+		if err := api.DecodeBody(body, &req); err != nil {
+			return badFrame(t, err)
+		}
+		n, err := svc.sd.Retry(ctx, req.RequestID)
+		if err != nil {
+			return err
+		}
+		svc.log.Info("client retry", "remote", remote, "request", req.RequestID, "reactivated", n)
+		_ = api.WriteFrame(stream, api.TRetryReply, api.RetryReply{Reactivated: n})
+		return nil
 	}
 
 	if !svc.admin {
@@ -181,6 +193,12 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 		if svc.gc != nil {
 			gcs := svc.gc.StatsSnapshot()
 			st.GC = &gcs
+			if gcs.Halted != "" {
+				st.Warnings = append(st.Warnings, "GC halted: "+gcs.Halted)
+			}
+		}
+		if warn := gcsweep.RefCountWarning(st.RefCount); warn != "" {
+			st.Warnings = append(st.Warnings, warn)
 		}
 		_ = api.WriteFrame(stream, api.TStatsReply, st)
 		return nil
@@ -192,32 +210,34 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 				return badFrame(t, err)
 			}
 		}
-		refs, err := svc.store.ListRefs(ctx)
+		// One page, always: Limit is clamped (0 — "all" to old clients —
+		// included) so the reply fits a frame whatever the store holds
+		// (issue #22); clients page with After.
+		limit := req.Limit
+		if limit <= 0 || limit > api.MaxRefsPage {
+			limit = api.MaxRefsPage
+		}
+		page, err := svc.store.RefsPage(ctx, req.Prefix, req.After, limit)
 		if err != nil {
 			return err
 		}
-		out := make([]api.RefInfo, 0, len(refs))
-		for _, r := range refs {
-			if req.Prefix != "" && !strings.HasPrefix(r.Name, req.Prefix) {
-				continue
-			}
+		out := make([]api.RefInfo, 0, len(page.Refs))
+		for _, r := range page.Refs {
 			k := r.Key
-			out = append(out, api.RefInfo{
+			row := api.RefInfo{
 				Name:      r.Name,
 				Key:       k[:],
 				CreatedNs: r.CreatedAt.UnixNano(),
-			})
+			}
 			if svc.gc != nil {
 				if e, ok := svc.gc.Entry(r.Name); ok {
-					out[len(out)-1].LastAccessNs = e.LastAccess.UnixNano()
-					out[len(out)-1].Pinned = e.Pinned
+					row.LastAccessNs = e.LastAccess.UnixNano()
+					row.Pinned = e.Pinned
 				}
 			}
-			if req.Limit > 0 && len(out) == req.Limit {
-				break
-			}
+			out = append(out, row)
 		}
-		_ = api.WriteFrame(stream, api.TRefsReply, api.RefsReply{Refs: out})
+		_ = api.WriteFrame(stream, api.TRefsReply, api.RefsReply{Refs: out, More: page.More, Matched: page.Matched})
 		return nil
 
 	case api.TDelete:
@@ -260,6 +280,9 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 		}
 		svc.log.Info("admin gc", "remote", remote, "garbage", garbage)
 		stats, err := svc.gc.Sweep(ctx, garbage, true)
+		if errors.Is(err, gcsweep.ErrHalted) {
+			return &sched.Error{Code: api.CodeUnavailable, Text: err.Error()}
+		}
 		if err != nil {
 			return err
 		}
@@ -286,6 +309,9 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 		}
 		if errors.Is(err, amber.ErrRefNotFound) {
 			return &sched.Error{Code: api.CodeNotFound, Text: err.Error()}
+		}
+		if errors.Is(err, gcsweep.ErrHalted) {
+			return &sched.Error{Code: api.CodeUnavailable, Text: err.Error()}
 		}
 		if err != nil {
 			return err

@@ -46,6 +46,8 @@ func App() *cli.App {
 			watchCmd(),
 			logsCmd(),
 			diagnoseCmd(),
+			deleteCmd(),
+			retryCmd(),
 			statusCmd(),
 			adminCmd(),
 			gcCmd(),

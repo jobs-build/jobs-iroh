@@ -260,7 +260,7 @@ func (m rootModel) helpLine() string {
 		if m.refs.captures() {
 			return "enter apply · esc abort"
 		}
-		return "/ filter · ↑↓ scroll · tab/1-4 view · q quit"
+		return "/ filter · ↑↓ scroll · n/p page · tab/1-4 view · q quit"
 	}
 	return "tab/1-4 view · q quit"
 }

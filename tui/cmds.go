@@ -33,8 +33,10 @@ type requestsMsg struct{ rows []api.RequestInfo }
 type fleetMsg struct{ runners []wire.RunnerInfo }
 type statsMsg struct{ stats api.StatsReply }
 type refsMsg struct {
-	prefix string
-	refs   []api.RefInfo
+	prefix, after string // the page asked for (stale replies are dropped)
+	refs          []api.RefInfo
+	more          bool // refs remain past this page
+	matched       int  // every ref matching the prefix (0 from older servers)
 }
 
 // netErrMsg is a failed one-shot exchange; the root shows it on the status
@@ -137,14 +139,26 @@ func fetchStatsCmd(c *client) tea.Cmd {
 	}
 }
 
-func fetchRefsCmd(c *client, prefix string) tea.Cmd {
+// fetchRefsCmd fetches the refs page that starts after `after` ("" = the
+// first page). An old server ignores After and answers its first page again:
+// rows at or before the cursor are dropped so the view never repeats them.
+func fetchRefsCmd(c *client, prefix, after string) tea.Cmd {
 	return func() tea.Msg {
 		var r api.RefsReply
-		req := api.RefsRequest{Prefix: prefix, Limit: refsLimit}
+		req := api.RefsRequest{Prefix: prefix, Limit: refsLimit, After: after}
 		if err := oneShot(c, api.TRefs, req, api.TRefsReply, &r); err != nil {
 			return netErrMsg{op: "refs", err: err}
 		}
-		return refsMsg{prefix: prefix, refs: r.Refs}
+		refs := r.Refs
+		if after != "" {
+			refs = refs[:0:0]
+			for _, ri := range r.Refs {
+				if ri.Name > after {
+					refs = append(refs, ri)
+				}
+			}
+		}
+		return refsMsg{prefix: prefix, after: after, refs: refs, more: r.More, matched: r.Matched}
 	}
 }
 

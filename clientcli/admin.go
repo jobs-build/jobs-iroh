@@ -3,6 +3,7 @@ package clientcli
 import (
 	"encoding/hex"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/urfave/cli/v2"
@@ -173,6 +174,12 @@ func adminStatsCmd() *cli.Command {
 				if g.LastError != "" {
 					fmt.Fprintf(w, "gc last error: %s\n", g.LastError)
 				}
+				if g.Halted != "" {
+					fmt.Fprintf(w, "gc HALTED:     %s\n", g.Halted)
+				}
+			}
+			for _, warn := range st.Warnings {
+				fmt.Fprintf(w, "WARNING:       %s\n", warn)
 			}
 			return nil
 		},
@@ -240,29 +247,63 @@ func adminRefsCmd() *cli.Command {
 			&cli.IntFlag{Name: "limit", Usage: "cap the listing (0 = all)"},
 		),
 		Action: func(c *cli.Context) error {
-			var reply api.RefsReply
-			req := api.RefsRequest{Prefix: c.String("prefix"), Limit: c.Int("limit")}
-			if err := adminCall(c, api.TRefs, req, api.TRefsReply, &reply); err != nil {
+			// The server answers one page per call (api.MaxRefsPage at most):
+			// walk the pages with the After cursor until the listing or the
+			// --limit runs out, printing as we go — a store of any size
+			// lists without one giant frame (issue #22).
+			ctx, stop := signalCtx(c.Context)
+			defer stop()
+			ac, err := dialAPI(ctx, c.String("server"), c.StringSlice("addr"), alpnAdmin)
+			if err != nil {
 				return err
 			}
+			defer ac.Close()
 			w := c.App.Writer
-			if len(reply.Refs) == 0 {
-				fmt.Fprintln(w, "no refs")
-				return nil
+			limit := c.Int("limit")
+			printed := 0
+			after := ""
+			for {
+				req := api.RefsRequest{Prefix: c.String("prefix"), After: after}
+				if limit > 0 {
+					req.Limit = min(limit-printed, api.MaxRefsPage)
+				}
+				var reply api.RefsReply
+				if err := ac.call(ctx, api.TRefs, req, api.TRefsReply, &reply); err != nil {
+					return err
+				}
+				for _, r := range reply.Refs {
+					if after != "" && r.Name <= after {
+						continue // an old server ignores After: drop what we printed
+					}
+					printRefRow(w, r)
+					printed++
+					if limit > 0 && printed == limit {
+						return nil
+					}
+				}
+				if !reply.More || len(reply.Refs) == 0 {
+					break
+				}
+				after = reply.Refs[len(reply.Refs)-1].Name
 			}
-			for _, r := range reply.Refs {
-				access, pin := "-", ""
-				if r.LastAccessNs > 0 {
-					access = time.Since(time.Unix(0, r.LastAccessNs)).Round(time.Second).String() + " ago"
-				}
-				if r.Pinned {
-					pin = "pin"
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, hex.EncodeToString(r.Key), access, pin)
+			if printed == 0 {
+				fmt.Fprintln(w, "no refs")
 			}
 			return nil
 		},
 	}
+}
+
+// printRefRow prints one `admin refs` line: name, key, last access, pin.
+func printRefRow(w io.Writer, r api.RefInfo) {
+	access, pin := "-", ""
+	if r.LastAccessNs > 0 {
+		access = time.Since(time.Unix(0, r.LastAccessNs)).Round(time.Second).String() + " ago"
+	}
+	if r.Pinned {
+		pin = "pin"
+	}
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, hex.EncodeToString(r.Key), access, pin)
 }
 
 // shortHex renders a key's first 8 hex chars for table output.

@@ -149,6 +149,15 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 	// request's resources.
 	s.requests[id] = r
 	r.target = s.require(kind, k, req.Def, def.Platform, nil, map[string]struct{}{id: {}}, req.Label)
+	// Resubmitting is the retry: failed nodes the new request joined —
+	// held failed by earlier requests' interest — run again (issue #22).
+	// Only with a live runner to run them; otherwise the joined failure
+	// answers the submit as before.
+	if s.livePlatformLocked(r.platform, time.Now()) {
+		if n := s.retryFailedLocked(r.target); n > 0 {
+			s.log.Info(what+" resubmit re-activated failed nodes", "request", id, "nodes", n)
+		}
+	}
 	snap := s.assembleLocked(r)
 	// No-runners rejection (issue #8): a build that still needs runner work
 	// on a platform with no live runner would stall forever — reject it now.
@@ -323,14 +332,11 @@ func (s *Sched) Requests() []api.RequestInfo {
 // here — disk usage belongs to the layer that owns the data directory; the
 // scheduler only sees the opened store.
 func (s *Sched) Stats() api.StatsReply {
-	refs, err := s.store.ListRefs(s.ctx)
-	if err != nil {
-		s.log.Warn("ref listing failed", "error", err)
-	}
+	refCount := s.countRefs()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return api.StatsReply{
-		RefCount:     len(refs),
+		RefCount:     refCount,
 		UptimeNs:     time.Since(s.startedAt).Nanoseconds(),
 		Requests:     len(s.requests),
 		NodesTracked: len(s.nodes),
@@ -620,4 +626,22 @@ func (s *Sched) putRequestStatusLocked(r *request, snap api.Snapshot) {
 	if _, err := s.kv.Put(s.ctx, requestKVKey(r.id), wire.MustEncode(requestStatus(r, snap))); err != nil && s.ctx.Err() == nil {
 		s.log.Debug("request status write failed", "request", r.id, "error", err)
 	}
+}
+
+// countRefs is the store's ref count, at most refCountTTL old: a name-only
+// count (no record decode, no []RefInfo — issue #22), cached because the
+// admin stats path polls it. A failed count keeps the last good value.
+func (s *Sched) countRefs() int {
+	s.refCountMu.Lock()
+	defer s.refCountMu.Unlock()
+	if !s.refCountAt.IsZero() && time.Since(s.refCountAt) < refCountTTL {
+		return s.refCount
+	}
+	n, err := s.store.CountRefs(s.ctx)
+	if err != nil {
+		s.log.Warn("ref count failed", "error", err)
+		return s.refCount
+	}
+	s.refCount, s.refCountAt = n, time.Now()
+	return n
 }

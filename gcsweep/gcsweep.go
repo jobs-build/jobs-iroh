@@ -12,6 +12,7 @@ package gcsweep
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -79,9 +80,34 @@ type Stats struct {
 	LastCycleFreed  int64
 	LastCycleWallNs int64
 	LastError       string
+	// Halted is non-empty while the sweeper refuses to run because the
+	// access snapshot exists but could not be loaded (see New).
+	Halted string
 
 	TreesRemoved       int
 	FetcherDirsRemoved int
+}
+
+// ErrHalted is returned (errors.Is-able) by Sweep and Pin while the sweeper
+// is halted on an unreadable access snapshot.
+var ErrHalted = errors.New("gc halted")
+
+// LegacyListLimit is the ref count past which peers from v0.36.0 and older
+// fail: their registries and admin clients list every ref in one CBOR array,
+// which their decoders refuse past 131,072 elements (issue #22). The sweep
+// warns from legacyListWarn on, so a mixed fleet is told before it breaks.
+const (
+	LegacyListLimit = 131_072
+	legacyListWarn  = LegacyListLimit * 9 / 10
+)
+
+// RefCountWarning returns the operator warning for a store of n refs, or ""
+// below the warning line.
+func RefCountWarning(n int) string {
+	if n < legacyListWarn {
+		return ""
+	}
+	return fmt.Sprintf("%d refs: jobs-registry and jobs-client v0.36.0 or older list every ref in one frame and fail past %d — upgrade them", n, LegacyListLimit)
 }
 
 // Sweeper owns the GC feature: the access tracker, the mark-sweep
@@ -102,6 +128,11 @@ type Sweeper struct {
 
 	sweepMu sync.Mutex // serializes sweeps (hourly loop vs admin gc)
 
+	// halted is set once, in New, when the snapshot exists but would not
+	// load: the sweeper then never sweeps and never writes the snapshot,
+	// so the unreadable file survives for inspection. Immutable after New.
+	halted string
+
 	mu    sync.Mutex // guards stats
 	stats Stats
 
@@ -115,10 +146,15 @@ type Sweeper struct {
 func New(log *slog.Logger, store *amber.Store, opts Options) (*Sweeper, error) {
 	tracker := reftrack.New()
 	snapPath := opts.SnapshotPath
+	var halted string
 	if err := tracker.Load(snapPath); err != nil {
-		// Corrupt snapshot: start empty (refs re-seed at the next sweep),
-		// never fatal — access data is approximately reconstructible.
-		log.Warn("gc: tracker snapshot unreadable; starting empty", "error", err)
+		// The snapshot exists but would not load. Sweeping from the empty
+		// tracker would re-seed every clock (nothing expires for a whole
+		// retention, then everything unread in between does) and drop every
+		// pin, protecting nothing a running image needs — so refuse, loudly,
+		// and leave the file alone. Not fatal: the host keeps serving.
+		halted = fmt.Sprintf("access snapshot %s unreadable (%v); GC will not sweep or rewrite it — restore a readable copy, or move it aside to start over with fresh clocks and no pins, then restart", snapPath, err)
+		log.Error("gc: HALTED: "+halted, "snapshot", snapPath, "error", err)
 	}
 	coll, err := gc.Open(filepath.Join(opts.StoreDir, "closures"), store.Objects(), store.RefStore(), gc.Options{
 		Rate:    opts.Rate,
@@ -138,8 +174,10 @@ func New(log *slog.Logger, store *amber.Store, opts Options) (*Sweeper, error) {
 		retention: opts.Retention,
 		interval:  opts.Interval,
 		minFree:   opts.MinFree,
+		halted:    halted,
 	}
 	g.stats.RetentionNs = int64(opts.Retention)
+	g.stats.Halted = halted
 	store.SetObserver(tracker.Touch)
 	store.SetRefGuard(coll)
 	return g, nil
@@ -188,10 +226,23 @@ func (g *Sweeper) Close() {
 	if err := g.coll.Close(); err != nil {
 		g.log.Warn("gc collector close", "error", err)
 	}
+	g.flush("close")
+}
+
+// flush persists the tracker — except while halted, when the unreadable
+// snapshot on disk is the only copy of the real clocks and pins and must
+// not be replaced by what this run saw.
+func (g *Sweeper) flush(when string) {
+	if g.halted != "" {
+		return
+	}
 	if err := g.tracker.Flush(g.snapPath); err != nil {
-		g.log.Warn("gc tracker flush", "error", err)
+		g.log.Warn("gc: tracker flush", "when", when, "error", err)
 	}
 }
+
+// Halted reports why the sweeper refuses to run ("" when it runs).
+func (g *Sweeper) Halted() string { return g.halted }
 
 // Sweep is one full tick: reconcile the tracker with the ref listing,
 // expire cold refs, score the store (advisory mark), run a cycle when
@@ -200,16 +251,19 @@ func (g *Sweeper) Close() {
 func (g *Sweeper) Sweep(ctx context.Context, garbage float64, force bool) (Stats, error) {
 	g.sweepMu.Lock()
 	defer g.sweepMu.Unlock()
+	if g.halted != "" {
+		g.log.Error("gc: HALTED: sweep refused: " + g.halted)
+		return g.failSweep(fmt.Errorf("%w: %s", ErrHalted, g.halted))
+	}
 	now := time.Now()
 
-	// 1. Seed & prune.
-	refs, err := g.store.ListRefs(ctx)
+	// 1. Seed & prune. Names only — reconcile needs no record decode.
+	names, err := g.store.RefNames(ctx)
 	if err != nil {
 		return g.failSweep(fmt.Errorf("list refs: %w", err))
 	}
-	names := make([]string, len(refs))
-	for i, r := range refs {
-		names[i] = r.Name
+	if warn := RefCountWarning(len(names)); warn != "" {
+		g.log.Warn("gc: " + warn)
 	}
 	g.tracker.Reconcile(names, now)
 
@@ -268,9 +322,7 @@ func (g *Sweeper) Sweep(ctx context.Context, garbage float64, force bool) (Stats
 	treesRemoved, fetcherRemoved := g.sweepTrees()
 
 	// 4. Persist & report.
-	if err := g.tracker.Flush(g.snapPath); err != nil {
-		g.log.Warn("gc: tracker flush", "error", err)
-	}
+	g.flush("sweep")
 	total, pinned := g.tracker.Counts()
 	disk := DirSize(g.storeDir)
 
@@ -351,26 +403,28 @@ func (g *Sweeper) MarkPinned(name string)  { g.tracker.Pin(name) }
 func (g *Sweeper) Guard() amber.RefGuard { return g.coll }
 
 // Pin marks an existing ref kept-forever and returns its record and entry.
+// While halted it fails with ErrHalted: the pin could not be persisted, and
+// reporting success for a pin the next restart forgets would be a lie.
 func (g *Sweeper) Pin(ctx context.Context, name string) (amber.RefInfo, reftrack.Entry, error) {
+	if g.halted != "" {
+		return amber.RefInfo{}, reftrack.Entry{}, fmt.Errorf("%w: %s", ErrHalted, g.halted)
+	}
 	ri, err := g.store.GetRef(ctx, name)
 	if err != nil {
 		return amber.RefInfo{}, reftrack.Entry{}, err
 	}
 	g.tracker.Pin(name)
-	if err := g.tracker.Flush(g.snapPath); err != nil {
-		g.log.Warn("gc: tracker flush after pin", "error", err)
-	}
+	g.flush("pin")
 	e, _ := g.tracker.Get(name)
 	return ri, e, nil
 }
 
 // Unpin clears the flag (always succeeds; the ref may already be gone).
-// The returned bool reports whether the ref record still exists.
+// The returned bool reports whether the ref record still exists. While
+// halted the unpin is in memory only (hosts surface ErrHalted themselves).
 func (g *Sweeper) Unpin(ctx context.Context, name string) (amber.RefInfo, reftrack.Entry, bool) {
 	g.tracker.Unpin(name)
-	if err := g.tracker.Flush(g.snapPath); err != nil {
-		g.log.Warn("gc: tracker flush after unpin", "error", err)
-	}
+	g.flush("unpin")
 	// GetRef first: it fires the store observer, so the entry read below reflects this unpin's own access.
 	ri, err := g.store.GetRef(ctx, name)
 	if err != nil {

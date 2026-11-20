@@ -3,7 +3,7 @@
 // stream; watch/log streams stay open with the server pushing frames until
 // terminal or the client closes.
 //
-// The build ALPN accepts: submit, watch, logs, cancel.
+// The build ALPN accepts: submit, watch, logs, cancel, retry.
 // The admin ALPN additionally accepts: requests, fleet, stats, refs, delete,
 // diagnose, gc, pin, unpin.
 package api
@@ -13,14 +13,37 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jobs-build/jobs-iroh/wire"
 )
 
-// MaxFrame bounds one frame's payload (matches the amber sync protocol).
-const MaxFrame = 16 << 20
+// MaxFrame bounds one frame's payload (matches the amber sync protocol,
+// transport-iroh ≥ v0.5.0). It is also the decoder's array/map element
+// budget — an array has no more elements than its frame has bytes —
+// rather than the CBOR library's 131,072 default (issue #22).
+const MaxFrame = 128 << 20
+
+// MaxRefsPage caps the rows of one refs reply; the server clamps a larger
+// (or absent) RefsRequest.Limit to it and sets RefsReply.More, so a reply
+// stays far inside MaxFrame however many refs the store holds.
+const MaxRefsPage = 5000
+
+// decMode decodes frames and bodies with the element limits tied to
+// MaxFrame.
+var decMode = func() cbor.DecMode {
+	m, err := cbor.DecOptions{MaxArrayElements: MaxFrame, MaxMapPairs: MaxFrame}.DecMode()
+	if err != nil {
+		panic(err)
+	}
+	return m
+}()
+
+// frameStep is the first allocation for a frame payload and the floor of
+// each doubling, so memory follows the bytes that arrive, not the header.
+const frameStep = 1 << 20
 
 // Frame types, client → server.
 const (
@@ -37,6 +60,7 @@ const (
 	TGC       = "gc"
 	TPin      = "pin"
 	TUnpin    = "unpin"
+	TRetry    = "retry"
 )
 
 // Frame types, server → client.
@@ -54,6 +78,7 @@ const (
 	TDiagnoseReply = "diagnose-reply"
 	TGCReply       = "gc-reply"
 	TPinReply      = "pin-reply"
+	TRetryReply    = "retry-reply"
 )
 
 // frame is the single wire envelope.
@@ -98,12 +123,20 @@ func ReadFrame(r io.Reader) (string, cbor.RawMessage, error) {
 	if n > MaxFrame {
 		return "", nil, fmt.Errorf("frame of %d bytes exceeds %d", n, MaxFrame)
 	}
-	payload := make([]byte, n)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return "", nil, err
+	payload := make([]byte, 0, min(int(n), frameStep))
+	for len(payload) < int(n) {
+		start := len(payload)
+		grow := min(int(n)-start, max(start, frameStep))
+		payload = slices.Grow(payload, grow)[:start+grow]
+		if _, err := io.ReadFull(r, payload[start:]); err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return "", nil, err
+		}
 	}
 	var f frame
-	if err := cbor.Unmarshal(payload, &f); err != nil {
+	if err := decMode.Unmarshal(payload, &f); err != nil {
 		return "", nil, fmt.Errorf("decode frame: %w", err)
 	}
 	if f.T == "" {
@@ -117,7 +150,7 @@ func DecodeBody(b cbor.RawMessage, v any) error {
 	if len(b) == 0 {
 		return errors.New("frame without body")
 	}
-	return cbor.Unmarshal(b, v)
+	return decMode.Unmarshal(b, v)
 }
 
 // --- payloads ---
@@ -202,9 +235,16 @@ type LogView struct {
 	Tail    []byte `cbor:"tail,omitempty"`
 }
 
-// CancelRequest cancels (or, on the admin ALPN with delete, removes) a request.
+// CancelRequest cancels (or, on the admin ALPN with delete, removes; with
+// retry, re-runs) a request.
 type CancelRequest struct {
 	RequestID string `cbor:"requestId"`
+}
+
+// RetryReply answers a retry: how many failed nodes were re-activated (0 for
+// a request failed by the no-runners watchdog, which re-joins instead).
+type RetryReply struct {
+	Reactivated int `cbor:"reactivated"`
 }
 
 // Error is the terminal failure frame.
@@ -262,6 +302,10 @@ type StatsReply struct {
 	NodesTracked int   `cbor:"nodesTracked"`
 	// GC is the auto-cleanup block — nil on servers without GC (additive).
 	GC *GCStats `cbor:"gc,omitempty"`
+	// Warnings are conditions an operator should act on (a GC that refuses
+	// to sweep, a ref count past what old peers can list) — empty when all
+	// is well (additive).
+	Warnings []string `cbor:"warnings,omitempty"`
 }
 
 // GCStats reports the GC/auto-cleanup state as of the last sweep — no mark
@@ -281,6 +325,11 @@ type GCStats struct {
 	LastCycleFreed  int64  `cbor:"lastCycleFreed,omitempty"`
 	LastCycleWallNs int64  `cbor:"lastCycleWallNs,omitempty"`
 	LastError       string `cbor:"lastError,omitempty"`
+	// Halted is set while the GC refuses to sweep because the access
+	// snapshot (refaccess.cbor) exists but could not be read: sweeping from
+	// an empty record would re-seed every clock and drop every pin. It says
+	// why; the file is left untouched for inspection (additive).
+	Halted string `cbor:"halted,omitempty"`
 }
 
 // GCRequest triggers one immediate GC sweep+cycle (admin).
@@ -295,15 +344,26 @@ type PinRequest struct {
 	Name string `cbor:"name"`
 }
 
-// RefsRequest browses refs by prefix (admin).
+// RefsRequest browses refs by prefix (admin), one page at a time: names
+// starting with Prefix and sorting strictly after After, in name order, at
+// most Limit of them. The server clamps Limit to MaxRefsPage — 0 included,
+// which used to mean "all" and is now one full page (with More set when
+// refs remain).
 type RefsRequest struct {
 	Prefix string `cbor:"prefix,omitempty"`
 	Limit  int    `cbor:"limit,omitempty"`
+	After  string `cbor:"after,omitempty"` // page cursor: the last name of the previous page (additive)
 }
 
-// RefsReply lists refs.
+// RefsReply lists one page of refs.
 type RefsReply struct {
 	Refs []RefInfo `cbor:"refs,omitempty"`
+	// More says refs matching the prefix remain past the last one listed:
+	// ask again with After set to its name (additive).
+	More bool `cbor:"more,omitempty"`
+	// Matched counts every ref matching the prefix, across all pages
+	// (additive; 0 from older servers).
+	Matched int `cbor:"matched,omitempty"`
 }
 
 // RefInfo is one ref row.

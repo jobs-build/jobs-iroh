@@ -1,6 +1,7 @@
 package runnerd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -90,8 +91,12 @@ func (d *daemon) attempt(ctx context.Context, job wire.Job, ev *events.Job) (run
 	// 1. Pull every input ref's closure from the server store.
 	ev.Phase("pulling")
 	var readRefs []string
-	for _, name := range job.PullRefs {
-		if _, err := d.ensureRef(ctx, name); err != nil {
+	for i, name := range job.PullRefs {
+		var want []byte
+		if i < len(job.PullKeys) {
+			want = job.PullKeys[i]
+		}
+		if _, err := d.ensureRef(ctx, name, want); err != nil {
 			if ctx.Err() != nil {
 				return runner.Outcome{Cancelled: true}, nil, "", readRefs
 			}
@@ -189,10 +194,17 @@ func scratchRefName(runnerID, node string, gen uint64) string {
 // ensureRef makes ref name resolvable-and-complete in the local store:
 // already-present refs short-circuit (GetKey + CheckComplete), otherwise the
 // closure is pulled from the server; a post-pull incompleteness re-pulls
-// once, then fails with errPullIncomplete (hard).
-func (d *daemon) ensureRef(ctx context.Context, name string) (key.Key, error) {
+// once, then fails with errPullIncomplete (hard). want, when non-empty, is
+// the key the server bound name to when it queued the job (wire.Job
+// PullKeys): a local copy naming anything else is stale — this cache
+// outlived the binding — and is re-pulled rather than trusted, or a
+// two-hop resolve (build-from:K → F → build-output:F) would chase the old
+// F to an output this runner never had.
+func (d *daemon) ensureRef(ctx context.Context, name string, want []byte) (key.Key, error) {
 	if k, ok, err := d.st.GetKey(ctx, name); err == nil && ok {
-		if d.checkComplete(k) == nil {
+		if len(want) > 0 && !bytes.Equal(k[:], want) {
+			d.log.Info("local ref stale; re-pulling", "ref", name, "local", k.String())
+		} else if d.checkComplete(k) == nil {
 			return k, nil
 		}
 	}
@@ -262,7 +274,7 @@ func (d *daemon) buildRunCfg(ctx context.Context, job wire.Job, ev *events.Job) 
 	if platform == "" {
 		platform = d.platform
 	}
-	shellKey, err := d.ensureRef(ctx, "shell:"+platform)
+	shellKey, err := d.ensureRef(ctx, "shell:"+platform, nil)
 	if err != nil {
 		o := runner.Outcome{Failed: true, Class: "retryable", Phase: "pulling", Stderr: "resolve shell: " + err.Error()}
 		if ctx.Err() != nil {

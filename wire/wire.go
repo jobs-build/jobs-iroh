@@ -148,6 +148,15 @@ type Job struct {
 	// PullRefs are the refs whose closures the runner must have locally
 	// before running (server-computed).
 	PullRefs []string `cbor:"pullRefs,omitempty"`
+	// PullKeys, when present, holds the server's key for each PullRefs
+	// entry at enqueue time (same order; an empty entry = no expectation).
+	// A runner whose local copy of a ref names a different key re-pulls it
+	// instead of trusting the stale copy — names like build-from:K are
+	// mutable, and a runner cache that outlived a server wipe can hold an
+	// older binding whose output it never had (issue #22: an import's
+	// fetcher build "not resolvable yet" on every retry). Additive: old
+	// runners ignore it, old servers omit it.
+	PullKeys [][]byte `cbor:"pullKeys,omitempty"`
 
 	CPUMilli int64 `cbor:"cpuMilli"`
 	MemBytes int64 `cbor:"memBytes"`

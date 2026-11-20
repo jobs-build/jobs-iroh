@@ -103,26 +103,53 @@ func (r *registry) resolveShell(ctx context.Context, platform string) (key.Key, 
 	return shell, nil
 }
 
-// resolveF maps K to the build identity F via the server's ref listing:
-// build-from:K's VALUE is F, so listing avoids pulling the build-from closure
+// resolveF maps K to the build identity F by looking refs up by name:
+// build-from:K's VALUE is F, so a lookup avoids pulling the build-from closure
 // (which reaches the whole source env). A bare build-output:K ref (a local
 // build's F pushed directly) resolves to itself, mirroring
-// runner.BuildImageByKey's fallback.
+// runner.BuildImageByKey's fallback. Two point lookups whatever the server
+// holds (issue #22: listing every ref to find one stopped working past
+// 131,072 refs); a server predating TRefGet falls back to the listing.
 func (r *registry) resolveF(ctx context.Context, k key.Key) (key.Key, error) {
-	refs, err := r.sync.Refs(ctx)
-	if err != nil {
-		return key.Key{}, fmt.Errorf("%w: list refs: %v", errUpstream, err)
+	from, err := r.sync.GetRef(ctx, "build-from:"+k.String())
+	switch {
+	case err == nil:
+		return from.Key, nil
+	case errors.Is(err, amberclient.ErrUnsupported):
+		return r.resolveFByListing(ctx, k)
+	case !errors.Is(err, amberclient.ErrRefNotFound):
+		return key.Key{}, fmt.Errorf("%w: look up build-from:%s: %v", errUpstream, k.String(), err)
 	}
-	var haveDirect bool
-	for _, ref := range refs {
+	if _, err := r.sync.GetRef(ctx, "build-output:"+k.String()); err == nil {
+		return k, nil
+	} else if !errors.Is(err, amberclient.ErrRefNotFound) {
+		return key.Key{}, fmt.Errorf("%w: look up build-output:%s: %v", errUpstream, k.String(), err)
+	}
+	return key.Key{}, fmt.Errorf("build %s not on jobs-server: %w", k.String(), errNotFound)
+}
+
+// resolveFByListing is resolveF for a server without TRefGet: the two names
+// are found by prefix-filtered listing (one unfiltered frame from such a
+// server — the pre-#22 behaviour, bounded by that server's own limits).
+func (r *registry) resolveFByListing(ctx context.Context, k key.Key) (key.Key, error) {
+	fromName, outName := "build-from:"+k.String(), "build-output:"+k.String()
+	var f key.Key
+	var haveFrom, haveDirect bool
+	err := r.sync.EachRef(ctx, "build-", func(ref amberclient.RefInfo) error {
 		switch ref.Name {
-		case "build-from:" + k.String():
-			return ref.Key, nil
-		case "build-output:" + k.String():
+		case fromName:
+			f, haveFrom = ref.Key, true
+		case outName:
 			haveDirect = true
 		}
-	}
-	if haveDirect {
+		return nil
+	})
+	switch {
+	case err != nil:
+		return key.Key{}, fmt.Errorf("%w: list refs: %v", errUpstream, err)
+	case haveFrom:
+		return f, nil
+	case haveDirect:
 		return k, nil
 	}
 	return key.Key{}, fmt.Errorf("build %s not on jobs-server: %w", k.String(), errNotFound)

@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 
@@ -59,7 +60,12 @@ func (g *gcRunner) Pin(ctx context.Context, name string) (api.RefInfo, error) {
 	return refRow(ri, e), nil
 }
 
+// Unpin fails with gcsweep.ErrHalted while the GC is halted, like Pin: the
+// change could not be persisted.
 func (g *gcRunner) Unpin(ctx context.Context, name string) (api.RefInfo, error) {
+	if h := g.sweeper.Halted(); h != "" {
+		return api.RefInfo{}, fmt.Errorf("%w: %s", gcsweep.ErrHalted, h)
+	}
 	ri, e, ok := g.sweeper.Unpin(ctx, name)
 	if !ok {
 		return api.RefInfo{Name: name}, nil
@@ -83,6 +89,6 @@ func toAPIGCStats(s gcsweep.Stats) api.GCStats {
 		LiveBytes: s.LiveBytes, GarbageBytes: s.GarbageBytes,
 		LastCycleNs: s.LastCycleNs, LastCycleReaped: s.LastCycleReaped,
 		LastCycleFreed: s.LastCycleFreed, LastCycleWallNs: s.LastCycleWallNs,
-		LastError: s.LastError,
+		LastError: s.LastError, Halted: s.Halted,
 	}
 }

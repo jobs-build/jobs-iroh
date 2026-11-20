@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/amber-store/core/key"
@@ -106,6 +107,66 @@ func (s *Store) ListRefs(ctx context.Context) ([]RefInfo, error) {
 		out = append(out, ri)
 	}
 	return out, nil
+}
+
+// RefPage is one page of a prefix-filtered ref listing (RefsPage).
+type RefPage struct {
+	Refs    []RefInfo // in name order, at most the requested limit
+	More    bool      // matching refs remain past the last one in Refs
+	Matched int       // every ref matching the prefix, across all pages
+}
+
+// RefsPage lists the refs whose name starts with prefix and sorts strictly
+// after after, in name order, at most limit of them (limit ≤ 0 = no cap).
+// Only the returned page's records are decoded, so a page of a store with
+// hundreds of thousands of refs costs one key scan, not a full decode —
+// amber-store-core's refstore has no ranged iterator yet, so the scan
+// itself still walks every name.
+func (s *Store) RefsPage(ctx context.Context, prefix, after string, limit int) (RefPage, error) {
+	recs, err := s.refs.All()
+	if err != nil {
+		return RefPage{}, err
+	}
+	var page RefPage
+	for _, r := range recs {
+		if !strings.HasPrefix(r.Name, prefix) {
+			continue
+		}
+		page.Matched++
+		if after != "" && r.Name <= after {
+			continue
+		}
+		if limit > 0 && len(page.Refs) == limit {
+			page.More = true
+			continue // keep counting Matched
+		}
+		ri, err := decodeRef(r.Name, r.Data)
+		if err != nil {
+			return RefPage{}, err
+		}
+		page.Refs = append(page.Refs, ri)
+	}
+	return page, nil
+}
+
+// RefNames returns every ref name in lexicographic order without decoding
+// the records — what reconciliation needs.
+func (s *Store) RefNames(ctx context.Context) ([]string, error) {
+	recs, err := s.refs.All()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(recs))
+	for i, r := range recs {
+		out[i] = r.Name
+	}
+	return out, nil
+}
+
+// CountRefs reports how many refs the store holds, without decoding them.
+func (s *Store) CountRefs(ctx context.Context) (int, error) {
+	recs, err := s.refs.All()
+	return len(recs), err
 }
 
 // DeleteRef removes name, or returns an error satisfying
