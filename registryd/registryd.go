@@ -104,6 +104,7 @@ type registry struct {
 	log             *slog.Logger
 	st              *amber.Store
 	sync            *reconnSync
+	adminOpts       amberclient.Options // jobs-admin/1.0 dial for the paged refs API (tags)
 	blobs           *blobCache
 	layers          *layerIndex
 	pins            *pinAsserter
@@ -167,9 +168,16 @@ func Run(ctx context.Context, o Options) error {
 	defer sc.Close()
 
 	r := &registry{
-		log:             log,
-		st:              st,
-		sync:            sc,
+		log:  log,
+		st:   st,
+		sync: sc,
+		adminOpts: amberclient.Options{
+			EndpointID: o.ServerID,
+			Addrs:      o.Addrs,
+			ALPN:       alpnAdmin,
+			BindAddr:   o.BindAddr,
+			Logger:     syncLog,
+		},
 		blobs:           &blobCache{dir: filepath.Join(dataDir, "blobs"), log: log},
 		layers:          newLayerIndex(),
 		pins:            newPinAsserter(),

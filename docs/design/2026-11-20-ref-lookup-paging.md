@@ -1,6 +1,6 @@
 # Ref lookup instead of the full ref list (issue #22)
 
-Status: implemented (jobs-iroh, transport-iroh v0.5.0). Supersedes the
+Status: implemented in jobs-iroh alone (transport-iroh unchanged at v0.4.1). Supersedes the
 "a corrupt snapshot starts empty" rule of
 `2026-08-25-gc-auto-cleanup.md` §3.
 
@@ -33,46 +33,53 @@ command to delete them.
 
 | Caller | Needs | Now |
 |---|---|---|
-| registry `resolveF` (every first pull) | `build-from:K`'s value, or whether `build-output:K` exists | two `TRefGet` point lookups |
-| registry `serveTags` | `build-from:*` minus `test:*` | `TRefList` pages by prefix |
+| registry `resolveF` (every first pull) | `build-from:K`'s value, or whether `build-output:K` exists | two point lookups (a pull that wants nothing) |
+| registry `serveTags` | `build-from:*` minus `test:*` | admin `refs` pages by prefix |
 | admin `refs`, TUI | display | one clamped page per call, `after` cursor |
 | `sched.Stats` | a count | name-only count, cached 10 s |
 | `gcsweep.Sweep` | every name (reconcile) | `RefNames`, in process, no record decode |
 
-## transport-iroh v0.5.0
+## The amber protocol: unchanged
 
-- `TRefGet{Name}` (14) → `TRef{Record}` or `unknown-ref`; no transfer. It
-  fires the access hook, like a pull: a lookup is a read. Old servers
-  answer `bad-request`; `amberclient.GetRef` maps that to `ErrUnsupported`
-  and the registry falls back to a listing.
-- `TRefList{Prefix, After, Limit}` (fields 18–20): `Limit > 0` returns at
-  most `MaxRefPage` (10,000) refs sorting after `After`, `More` (21) set
-  when matches remain, a page ended early before half a frame. `Limit 0`
-  is the old unpaged listing, refused with `bad-request` instead of sent
-  unreadable when it passes `MaxListingFrame`. Old servers ignore the
-  fields: clients filter the reply and stop on a missing `More`. A
-  negative `Limit` is the unpaged listing.
-- Limits are raised **only where a client reads a listing**: a `TRefs`
-  frame may be up to `MaxListingFrame` (128 MiB), read with `ReadListing`,
-  whose array/map limits equal that size. `ReadMsg` — every request a
-  server reads, every transfer frame — keeps `MaxFrame` (16 MiB) and the
-  library's 131,072 elements. A first draft tied the element limits to a
-  128 MiB `MaxFrame` everywhere; review measured a 20 MB request of empty
-  `Refs` maps decoding into 1.28 GiB (a 1-byte element becomes a 64-byte
-  struct), on an ALPN anyone may dial. Readers grow the raw buffer as
-  bytes arrive.
+The ticket first planned a `TRefGet` op and a paged `TRefList` upstream
+(transport-iroh v0.5.0, with listing frames up to 128 MiB). It turned out
+not to be needed, so transport-iroh stays at v0.4.1:
 
-amber-store-core's refstore has no ranged iterator, so a page still scans
-every name server-side (decoding only the page). That is a CPU cost, not a
-frame or memory-per-reply one; a `refstore` range scan is the follow-up
-that makes pages O(page).
+- **A point lookup is a pull that wants nothing.** `amberclient.GetRef`
+  sends `TPull{Name}` with no data connections, reads the server's `TRef`
+  (the raw record — K→F is its key), and answers with an empty `TWants`.
+  The server's send loop ends cleanly on an empty want list before any
+  object moves: no transfer, no shard token, no gather wait, no error log
+  (an absent name is `unknown-ref`, logged by v0.4.1 like any pull of a
+  missing ref). The server counts it as a read of the ref (OnAccess), which
+  is right for the registry: the binding it serves stays warm. Every
+  transport-iroh server speaks it, so there is no version coupling.
+- **Browsing uses jobs-iroh's own paged admin `refs` API**, not
+  `TRefList`: the registry dials `jobs-admin/1.0` for its tag list (two
+  prefix walks, `test:` and `build-from:`), one connection per listing.
+- The amber frame limits stay at 16 MiB and 131,072 elements. Nothing in
+  jobs-iroh sends `TRefList` any more except `amberclient.Refs` (kept for
+  small stores and tests); peers v0.36.0 and older still do, hence the
+  warning below.
+
+An upstream `TRefGet` / paged `TRefList` remains a possible clean-up (one
+round trip instead of two, a listing without the admin ALPN); a patch for
+it was prepared and not needed.
+
+jobs-iroh's admin pages scan every name server-side (amber-store-core's
+refstore has no ranged iterator), decoding only the page. That is a CPU
+cost, not a frame or memory-per-reply one; a `refstore` range scan is the
+follow-up that makes pages O(page).
 
 ## jobs-iroh
 
-- The same split in `api/`: replies (`ReadFrame`/`DecodeBody`) up to
-  `MaxFrame` 128 MiB with element limits tied to it; requests
-  (`ReadRequest`/`DecodeRequest`, what `serve` reads) up to
-  `MaxRequestFrame` 16 MiB with the default limits. Incremental reads.
+- `api/` limits are raised only where a client reads a reply
+  (`ReadFrame`/`DecodeBody`: `MaxFrame` 128 MiB, element limits tied to
+  it). Requests — what `serve` reads from any peer — keep 16 MiB and the
+  library's 131,072 elements (`ReadRequest`/`DecodeRequest`): a 1-byte CBOR
+  element can decode into a 64-byte struct, and a first draft that raised
+  the limits on both sides let a 20 MB frame decode into 1.28 GiB.
+  Readers grow the raw buffer as bytes arrive.
   `RefsRequest.After` + `RefsReply.More/Matched`; the server clamps every
   page to `api.MaxRefsPage` (5,000) — `Limit 0`, which meant "all",
   included: an old client now gets the first page instead of `EOF`.

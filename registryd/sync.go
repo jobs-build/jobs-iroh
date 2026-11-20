@@ -76,8 +76,8 @@ func (r *reconnSync) Pin(ctx context.Context, names []string) error {
 	})
 }
 
-// GetRef looks one ref up on the server by name (amberclient.GetRef):
-// ErrRefNotFound when absent, ErrUnsupported from a server predating TRefGet.
+// GetRef looks one ref up on the server by name (amberclient.GetRef — a
+// pull that wants nothing): ErrRefNotFound when absent.
 func (r *reconnSync) GetRef(ctx context.Context, name string) (amberclient.RefInfo, error) {
 	var ri amberclient.RefInfo
 	err := r.do(ctx, func(c *amberclient.Client) error {
@@ -86,15 +86,6 @@ func (r *reconnSync) GetRef(ctx context.Context, name string) (amberclient.RefIn
 		return err
 	})
 	return ri, err
-}
-
-// EachRef walks the server's refs under prefix page by page
-// (amberclient.EachRef). A redial restarts the walk, so fn must tolerate
-// seeing a name twice (set-building callers do).
-func (r *reconnSync) EachRef(ctx context.Context, prefix string, fn func(amberclient.RefInfo) error) error {
-	return r.do(ctx, func(c *amberclient.Client) error {
-		return c.EachRef(ctx, prefix, fn)
-	})
 }
 
 // do runs op on the current client, dialing lazily and retrying once on a

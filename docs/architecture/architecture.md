@@ -58,14 +58,15 @@ Three binaries:
 A fourth, optional binary — **`jobs-registry`** (§10.1) — is a read-only OCI
 registry that serves build outputs as pullable container images. Like the
 runner it is purely a dial-side peer: a private store synced on demand over
-`jobs-amber-admin/1.0`, plus an HTTP face speaking the Distribution API.
+`jobs-amber-admin/1.0` (plus the paged admin `refs` API on `jobs-admin/1.0`
+for its tag list), and an HTTP face speaking the Distribution API.
 
 | ALPN | Peer | Purpose |
 |---|---|---|
 | `jobs-build/1.0` | client | submit a build or test, watch progress, fetch logs, cancel, retry |
 | `jobs-runner-nats/4.0` | runner | NATS tunnel — each stream proxies to the embedded NATS server |
 | `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
-| `jobs-admin/1.0` | client / TUI | requests, fleet, stats, refs browse (paged), cancel/delete/retry, diagnose |
+| `jobs-admin/1.0` | client / TUI / registry | requests, fleet, stats, refs browse (paged — also the registry's tag list), cancel/delete/retry, diagnose |
 | `jobs-amber-admin/1.0` | client / registry | store sync — push source trees up, pull outputs (and images-to-be) home |
 
 Server data dir (`--data-dir`, default `~/.local/share/jobs-iroh/server`):
@@ -380,13 +381,15 @@ past 131,072 (the CBOR library's default element limit) and past 16 MiB.
 So: `refs` answers one page — `{prefix, after, limit}` in, `{refs, more,
 matched}` out, the limit clamped to 5,000 rows (0, once "all", included) —
 and clients walk pages with the `after` cursor; `stats` counts refs
-without decoding them (cached 10 s). The amber protocol has the same
-shape since transport-iroh v0.5.0: `TRefGet{name}` is a point lookup
-answered by the ref record alone (a read — it touches the GC clock), and
-`TRefList{prefix, after, limit}` pages at most 10,000 refs with `more`
-(the same split: only a client reading a listing, `ReadListing`, takes
-frames past 16 MiB). The registry resolves K→F with two `TRefGet`s and
-lists tags by prefix.
+without decoding them (cached 10 s). The amber protocol's `TRefList` is
+still one unpaged frame (16 MiB, 131,072 elements), so nothing jobs-iroh
+runs uses it: a point lookup is a pull that wants nothing —
+`TPull{name}`, the server's `TRef` answer (the record, a read that touches
+the GC clock), then an empty `TWants`, which ends the server's send loop
+before any object moves (`amberclient.GetRef`, every transport-iroh
+version) — and browsing goes through the admin `refs` pages above. The
+registry resolves K→F with two lookups and walks the admin pages for its
+tag list.
 
 **The NATS tunnel** (`jobs-runner-nats/3.0`, `natsiroh/`): the runner's
 stock NATS client is given a custom dialer that opens an iroh stream and
@@ -681,9 +684,9 @@ a seekable view of that generator (arithmetic seeks, restart-and-discard for
 ranges) keeps HEAD, `Range` resumes and `Content-Length` correct.
 
 On a first pull the registry resolves K→F by **looking the ref up by name**
-(`TRefGet build-from:K`, then `build-output:K` for a direct F — the ref's
-*value* is F, and pulling it would drag the whole source env in; a server
-without `TRefGet` falls back to a listing), syncs `build-output:F` / `build-output-deps:F` into
+(`build-from:K`, then `build-output:K` for a direct F, each a pull that
+wants nothing — the ref's *value* is F, and pulling its closure would drag
+the whole source env in), syncs `build-output:F` / `build-output-deps:F` into
 its own flocked store via `amberclient.Pull` (verified, objects-before-ref),
 assembles the image, and caches the only two blobs it keeps — the manifest
 and the config, both small JSON — in `<data-dir>/blobs`. A blob file's

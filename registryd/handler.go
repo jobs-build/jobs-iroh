@@ -14,8 +14,6 @@ import (
 
 	"github.com/amber-store/core/key"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-
-	"github.com/jobs-build/jobs-iroh/amberclient"
 )
 
 // repoName is the single repository the registry serves; its tags are build
@@ -357,7 +355,8 @@ func (r *registry) recoverDigest(reqCtx context.Context, d v1.Hash) bool {
 // build-from:K (they share the buildfrom stage) but have no output: their
 // Ks — marked by the server's test:K bookkeeping ref — are skipped. Server
 // unreachable → the local set alone, so a cached registry keeps answering.
-// Only the two namespaces travel — paged, prefix-filtered server-side — never
+// Only the two namespaces travel — paged, prefix-filtered server-side, over
+// the admin refs API (eachServerRef) — never
 // the whole ref list (issue #22). Supports the standard n/last paging.
 func (r *registry) serveTags(w http.ResponseWriter, req *http.Request) {
 	seen := map[string]bool{}
@@ -441,15 +440,15 @@ func (r *registry) writeError(w http.ResponseWriter, status int, code, message s
 // the buildfrom stage but have no output to serve).
 func (r *registry) serverTags(ctx context.Context) (map[string]bool, error) {
 	tests := map[string]bool{}
-	if err := r.sync.EachRef(ctx, "test:", func(ref amberclient.RefInfo) error {
-		tests[strings.TrimPrefix(ref.Name, "test:")] = true
+	if err := r.eachServerRef(ctx, "test:", func(name string) error {
+		tests[strings.TrimPrefix(name, "test:")] = true
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 	tags := map[string]bool{}
-	err := r.sync.EachRef(ctx, "build-from:", func(ref amberclient.RefInfo) error {
-		kHex := strings.TrimPrefix(ref.Name, "build-from:")
+	err := r.eachServerRef(ctx, "build-from:", func(name string) error {
+		kHex := strings.TrimPrefix(name, "build-from:")
 		if _, valid := parseHexKey(kHex); valid && !tests[kHex] {
 			tags[kHex] = true
 		}

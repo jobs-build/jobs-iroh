@@ -20,11 +20,10 @@ import (
 	"github.com/jobs-build/jobs-iroh/wire"
 )
 
-// MaxFrame bounds one frame a client reads (a reply), as transport-iroh's
-// MaxListingFrame bounds a listing. ReadFrame/DecodeBody decode with the
-// array/map element limits tied to it — an array has no more elements than
-// its frame has bytes — rather than the CBOR library's 131,072 default
-// (issue #22).
+// MaxFrame bounds one frame a client reads (a reply). ReadFrame/DecodeBody
+// decode with the array/map element limits tied to it — an array has no more
+// elements than its frame has bytes — rather than the CBOR library's 131,072
+// default (issue #22).
 const MaxFrame = 128 << 20
 
 // MaxRequestFrame bounds one frame a server reads (a request), decoded by

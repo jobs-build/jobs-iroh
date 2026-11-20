@@ -127,7 +127,7 @@ func clampConns(n int) int {
 	return n
 }
 
-// RefInfo is one remote reference (GetRef, RefsPage, EachRef, Refs).
+// RefInfo is one remote reference (GetRef, Refs).
 type RefInfo struct {
 	Name      string
 	Key       key.Key

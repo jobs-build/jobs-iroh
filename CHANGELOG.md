@@ -4,18 +4,20 @@
 
 - **A server with more than 131,072 refs serves images again, and keeps
   its pins across restarts** (issue #22). Nothing transfers the whole ref
-  list any more: the registry resolves K→F with two point lookups
-  (transport-iroh v0.5.0 `TRefGet`; an older server falls back to a
-  listing) and lists tags by prefix, page by page (`TRefList{prefix,
-  after, limit}` → `more`). The admin `refs` frame always answers one page
+  list any more, and transport-iroh is unchanged (v0.4.1): the registry
+  resolves K→F with two point lookups — each a pull that wants nothing
+  (`TPull`, the server's `TRef`, an empty `TWants`; no object moves,
+  `amberclient.GetRef`) — and builds its tag list from the server's paged
+  admin `refs` API by prefix. The admin `refs` frame always answers one page
   of at most 5,000 rows with an `after` cursor (`more`, `matched`
   additive) — `Limit 0`, which meant "all", gets the first page instead of
   an unreadable frame; `jobs-client admin refs` and the TUI (`n`/`p`) walk
-  the pages. `stats` counts refs without decoding them. Frame limits are
-  lifted where a client reads a reply: a listing (`ReadListing`) or an API
-  reply may be 128 MiB with the CBOR array/map limits tied to the frame
-  size; whatever a server reads keeps 16 MiB and the default limits (a
-  1-byte element can decode into a 64-byte struct, and access is open).
+  the pages. `stats` counts refs without decoding them. API frame limits
+  are lifted where a client reads a reply: 128 MiB with the CBOR array/map
+  limits tied to the frame size; whatever the server reads keeps 16 MiB and
+  the default limits (a 1-byte element can decode into a 64-byte struct,
+  and access is open). The amber protocol's limits are unchanged — nothing
+  sends it a full listing any more.
   Tested against a 300k-ref store (image pull, tags, admin paging).
   **Registries and clients from v0.36.0 or older still list everything in
   one frame** and fail near 129,000 refs (16 MiB) — `admin stats` warns
