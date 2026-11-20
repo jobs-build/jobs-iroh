@@ -62,10 +62,10 @@ runner it is purely a dial-side peer: a private store synced on demand over
 
 | ALPN | Peer | Purpose |
 |---|---|---|
-| `jobs-build/1.0` | client | submit a build or test, watch progress, fetch logs, cancel |
+| `jobs-build/1.0` | client | submit a build or test, watch progress, fetch logs, cancel, retry |
 | `jobs-runner-nats/4.0` | runner | NATS tunnel — each stream proxies to the embedded NATS server |
 | `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
-| `jobs-admin/1.0` | client / TUI | requests, fleet, stats, refs browse, cancel/delete, diagnose |
+| `jobs-admin/1.0` | client / TUI | requests, fleet, stats, refs browse (paged), cancel/delete/retry, diagnose |
 | `jobs-amber-admin/1.0` | client / registry | store sync — push source trees up, pull outputs (and images-to-be) home |
 
 Server data dir (`--data-dir`, default `~/.local/share/jobs-iroh/server`):
@@ -361,13 +361,27 @@ closure is present — objects-before-ref holds across the wire too.
 
 **Client API framing** (`jobs-build/1.0`, `jobs-admin/1.0`): each frame is a
 4-byte big-endian length + a CBOR envelope `{t: string, b: bytes}`; max
-frame 16 MiB; one request per stream, but watch/log streams stay open for
-server-pushed frames. Build-ALPN requests: `submit`, `watch`, `logs`,
-`cancel`. Admin adds: `requests`, `fleet`, `stats`, `refs`, `delete`,
-`diagnose`. Replies: `submitted`, `snapshot`, `logview`/`logchunk`, `ok`,
-`error` (+ the admin `*-reply` frames). While serving a request the server
-watches the stream; anything unexpected from the client (including close)
-cancels the work.
+frame 128 MiB (the decoder's array/map limits equal it — an array has no
+more elements than its frame has bytes — and the reader allocates as bytes
+arrive, not what the header claims); one request per stream, but watch/log
+streams stay open for server-pushed frames. Build-ALPN requests: `submit`,
+`watch`, `logs`, `cancel`, `retry`. Admin adds: `requests`, `fleet`,
+`stats`, `refs`, `delete`, `diagnose`, `gc`, `pin`/`unpin`. Replies:
+`submitted`, `snapshot`, `logview`/`logchunk`, `ok`, `error` (+ the
+`*-reply` frames). While serving a request the server watches the stream;
+anything unexpected from the client (including close) cancels the work.
+
+**No reply carries the whole ref list** (issue #22). A busy server holds
+hundreds of thousands of refs; one frame of all of them stopped decoding
+past 131,072 (the CBOR library's default element limit) and past 16 MiB.
+So: `refs` answers one page — `{prefix, after, limit}` in, `{refs, more,
+matched}` out, the limit clamped to 5,000 rows (0, once "all", included) —
+and clients walk pages with the `after` cursor; `stats` counts refs
+without decoding them (cached 10 s). The amber protocol has the same
+shape since transport-iroh v0.5.0: `TRefGet{name}` is a point lookup
+answered by the ref record alone (a read — it touches the GC clock), and
+`TRefList{prefix, after, limit}` pages at most 10,000 refs with `more`.
+The registry resolves K→F with two `TRefGet`s and lists tags by prefix.
 
 **The NATS tunnel** (`jobs-runner-nats/3.0`, `natsiroh/`): the runner's
 stock NATS client is given a custom dialer that opens an iroh stream and
@@ -413,7 +427,7 @@ may take it.
 
 | Piece | Config | Purpose |
 |---|---|---|
-| stream `JOBS` | WorkQueuePolicy, subjects `jobs.<platform>.<class>`, duplicates 10 m | one message per node attempt; payload = `Job{node, kind, key, gen, def, platform, class, pullRefs, cpuMilli, memBytes}`; msg-id `job-<node>-<gen>` |
+| stream `JOBS` | WorkQueuePolicy, subjects `jobs.<platform>.<class>`, duplicates 10 m | one message per node attempt; payload = `Job{node, kind, key, gen, def, platform, class, pullRefs, pullKeys, cpuMilli, memBytes}`; msg-id `job-<node>-<gen>` |
 | durable consumers `wq-<platform>-<class>` | AckExplicit, AckWait 90 s, MaxDeliver 25, MaxAckPending 4096 | one per (platform, class), **shared** by every runner that fits the class |
 | stream `RESULTS` | LimitsPolicy, `results.<node>`, MaxAge 7 d, duplicates 15 m | terminal attempt reports `Result{class, exit, errSummary, refs[], rusage, scratchRef}`; msg-id `result-<node>-<gen>` dedups redelivery |
 | stream `FAILURES` | LimitsPolicy, `failures.<node>`, MaxAge 7 d, 8 msgs/subject, 1 GiB cap | durable per-attempt failure records (§9) |
@@ -434,7 +448,12 @@ the conventional "try again" exit for fetchers and plugins) get a budget of
 problems, e.g. a pull failure) re-enqueue without burning budget;
 MaxDeliver 25 is the poison-message backstop. `failed-upstream` is derived
 per request from its snapshot. FAILED is memory-only — retry is resubmit
-(doneness-by-ref makes that cheap). Node generations seed from the wall
+(doneness-by-ref makes that cheap): a submit whose closure joins failed
+nodes — held failed by earlier requests that still want them — re-activates
+them (deps first; doneness fast-path, else re-unfold and re-queue with a
+fresh budget), and `retry` does the same for an existing request by ID
+(`jobs-client retry`; a request the no-runners watchdog failed re-joins its
+target). `jobs-client delete` removes requests outright. Node generations seed from the wall
 clock so JetStream dedup windows survive server restarts. There is no
 runner-reconnect adoption: an orphaned in-flight job simply redelivers after
 its ack deadline lapses — wasteful but never wrong.
@@ -520,8 +539,11 @@ path) run fetchers as a plain host subprocess instead.
   rung is reserved in an admission ledger (Σ held cpu/mem ≤ capacity),
   so the runner never over-commits.
 - **Per-job flow:** fetch → pull every ref closure in the job's `pullRefs`
-  (skip if present-and-complete; one re-pull on incompleteness, then hard
-  fail) → ingest the in-band definition (verifying its hash equals the
+  (skip if present-and-complete *and* naming the key the server bound it to
+  when it queued the job — `pullKeys`, same order; names like
+  `build-from:K` are mutable, and a runner cache that outlived a server
+  wipe, or that holds the runner's own losing attempt, must not shadow the
+  server's binding; one re-pull on incompleteness, then hard fail) → ingest the in-band definition (verifying its hash equals the
   node's key) → run the stage driver → push all output roots as one tree
   under a scratch ref `runner-push/<runner>/<node>-<gen>` → **publish the
   result, then ack** the job message. Result-before-ack plus JetStream
@@ -653,9 +675,10 @@ tar generated from the CAS as the client reads it. `http.ServeContent` over
 a seekable view of that generator (arithmetic seeks, restart-and-discard for
 ranges) keeps HEAD, `Range` resumes and `Content-Length` correct.
 
-On a first pull the registry resolves K→F from the server's **ref listing**
-(the `build-from:K` ref's *value* is F — pulling that ref would drag the
-whole source env in), syncs `build-output:F` / `build-output-deps:F` into
+On a first pull the registry resolves K→F by **looking the ref up by name**
+(`TRefGet build-from:K`, then `build-output:K` for a direct F — the ref's
+*value* is F, and pulling it would drag the whole source env in; a server
+without `TRefGet` falls back to a listing), syncs `build-output:F` / `build-output-deps:F` into
 its own flocked store via `amberclient.Pull` (verified, objects-before-ref),
 assembles the image, and caches the only two blobs it keeps — the manifest
 and the config, both small JSON — in `<data-dir>/blobs`. A blob file's

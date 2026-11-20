@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+- **A server with more than 131,072 refs serves images again, and keeps
+  its pins across restarts** (issue #22). Nothing transfers the whole ref
+  list any more: the registry resolves K→F with two point lookups
+  (transport-iroh v0.5.0 `TRefGet`; an older server falls back to a
+  listing) and lists tags by prefix, page by page (`TRefList{prefix,
+  after, limit}` → `more`). The admin `refs` frame always answers one page
+  of at most 5,000 rows with an `after` cursor (`more`, `matched`
+  additive) — `Limit 0`, which meant "all", gets the first page instead of
+  an unreadable frame; `jobs-client admin refs` and the TUI (`n`/`p`) walk
+  the pages. `stats` counts refs without decoding them. Frame limits are
+  lifted too: 128 MiB frames in both protocols with the CBOR array/map
+  limits tied to the frame size, read incrementally. Tested against a
+  300k-ref store (image pull, tags, admin paging). **Registries and
+  clients from v0.36.0 or older still list everything in one frame** and
+  fail past 131,072 refs — `admin stats` warns from 90% of that on.
+- **An unreadable `refaccess.cbor` halts the GC instead of wiping it.** The
+  snapshot now loads past 131,072 entries; one that exists but will not
+  read or decode makes the GC refuse to sweep or pin and never rewrites
+  the file — `admin stats` shows `gc HALTED` and a `WARNING`, the log an
+  error. Restore a readable copy, or move it aside (fresh clocks, no pins)
+  and restart. A missing file is still a first start. Applies to runners'
+  and clients' GC too.
+- **First builds on a fresh server no longer fail an import on a stale
+  runner cache.** Jobs carry the server's key for every pull ref
+  (`wire.Job.PullKeys`, additive); a runner re-pulls a local ref that names
+  anything else instead of trusting it — a `build-from:K` left from before
+  a server wipe (or from the runner's own discarded attempt) sent the
+  import's fetcher resolve to an output the runner never had, on every
+  retry. No ALPN change: old runners behave as before.
+- **Failed requests can be retried and cleared from the CLI.** A resubmit
+  now re-runs the failed nodes it joins, even while earlier failed
+  requests still hold them. New `jobs-client retry (--request-id … |
+  --failed)` re-runs failed requests in place (new `retry` frame on the
+  build ALPN) and `jobs-client delete (--request-id … | --failed)` removes
+  them. Design: `docs/design/2026-11-20-ref-lookup-paging.md`.
+
 ## v0.36.0 — 2026-11-07
 
 - **Tests.** A `TESTS.jobs` next to `BUILD.jobs` defines `test()` (the
