@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -295,5 +296,40 @@ func TestRefGuardCommitAndAbort(t *testing.T) {
 	}
 	if _, ok, _ := s.GetKey(ctx, "refused"); ok {
 		t.Fatal("refused ref must not exist")
+	}
+}
+
+func TestRefsPage(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	k := mustFileKey(t, "v")
+	for _, name := range []string{"a/1", "a/2", "a/3", "b/1"} {
+		if err := s.PutRef(ctx, name, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := func(p amber.RefPage) []string {
+		var out []string
+		for _, r := range p.Refs {
+			out = append(out, r.Name)
+		}
+		return out
+	}
+	p, err := s.RefsPage(ctx, "a/", "", 2)
+	if err != nil || !slices.Equal(names(p), []string{"a/1", "a/2"}) || !p.More || p.Matched != 3 {
+		t.Fatalf("page 1: %+v %v", p, err)
+	}
+	p, err = s.RefsPage(ctx, "a/", "a/2", 2)
+	if err != nil || !slices.Equal(names(p), []string{"a/3"}) || p.More || p.Matched != 3 {
+		t.Fatalf("page 2: %+v %v", p, err)
+	}
+	if p, _ := s.RefsPage(ctx, "", "", 0); len(p.Refs) != 4 || p.More {
+		t.Fatalf("unlimited: %+v", p)
+	}
+	if n, err := s.CountRefs(ctx); err != nil || n != 4 {
+		t.Fatalf("CountRefs = %d %v", n, err)
+	}
+	if got, err := s.RefNames(ctx); err != nil || !slices.Equal(got, []string{"a/1", "a/2", "a/3", "b/1"}) {
+		t.Fatalf("RefNames = %v %v", got, err)
 	}
 }

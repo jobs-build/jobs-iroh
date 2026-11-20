@@ -355,25 +355,17 @@ func (r *registry) recoverDigest(reqCtx context.Context, d v1.Hash) bool {
 // build-from:K (they share the buildfrom stage) but have no output: their
 // Ks — marked by the server's test:K bookkeeping ref — are skipped. Server
 // unreachable → the local set alone, so a cached registry keeps answering.
-// Supports the standard n/last paging.
+// Only the two namespaces travel — paged, prefix-filtered server-side, over
+// the admin refs API (eachServerRef) — never
+// the whole ref list (issue #22). Supports the standard n/last paging.
 func (r *registry) serveTags(w http.ResponseWriter, req *http.Request) {
 	seen := map[string]bool{}
 	for _, rec := range r.listRecords() {
 		seen[rec.K] = true
 	}
-	if refs, err := r.sync.Refs(req.Context()); err == nil {
-		tests := map[string]bool{}
-		for _, ref := range refs {
-			if kHex, ok := strings.CutPrefix(ref.Name, "test:"); ok {
-				tests[kHex] = true
-			}
-		}
-		for _, ref := range refs {
-			if kHex, ok := strings.CutPrefix(ref.Name, "build-from:"); ok && !tests[kHex] {
-				if _, valid := parseHexKey(kHex); valid {
-					seen[kHex] = true
-				}
-			}
+	if server, err := r.serverTags(req.Context()); err == nil {
+		for kHex := range server {
+			seen[kHex] = true
 		}
 	} else {
 		r.log.Warn("tags list: server refs unavailable", "error", err)
@@ -441,4 +433,26 @@ func (r *registry) writeError(w http.ResponseWriter, status int, code, message s
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"errors": []map[string]string{{"code": code, "message": message}},
 	})
+}
+
+// serverTags is the server's share of the tag list: every K with a
+// build-from:K ref, minus the test submits (marked by test:K — they share
+// the buildfrom stage but have no output to serve).
+func (r *registry) serverTags(ctx context.Context) (map[string]bool, error) {
+	tests := map[string]bool{}
+	if err := r.eachServerRef(ctx, "test:", func(name string) error {
+		tests[strings.TrimPrefix(name, "test:")] = true
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	tags := map[string]bool{}
+	err := r.eachServerRef(ctx, "build-from:", func(name string) error {
+		kHex := strings.TrimPrefix(name, "build-from:")
+		if _, valid := parseHexKey(kHex); valid && !tests[kHex] {
+			tags[kHex] = true
+		}
+		return nil
+	})
+	return tags, err
 }

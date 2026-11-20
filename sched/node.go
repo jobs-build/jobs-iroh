@@ -667,6 +667,11 @@ func (s *Sched) enqueueLocked(n *node) {
 		s.failNodeLocked(n, "compute pull refs: "+err.Error())
 		return
 	}
+	pullKeys, err := s.pullKeysLocked(pull)
+	if err != nil {
+		s.failNodeLocked(n, "resolve pull refs: "+err.Error())
+		return
+	}
 	job := wire.Job{
 		Node:     n.name,
 		Kind:     n.id.kind,
@@ -675,6 +680,7 @@ func (s *Sched) enqueueLocked(n *node) {
 		Platform: n.platform,
 		Class:    string(class),
 		PullRefs: pull,
+		PullKeys: pullKeys,
 		CPUMilli: req.CPUMilli,
 		MemBytes: req.MemBytes,
 	}

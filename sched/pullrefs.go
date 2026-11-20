@@ -223,3 +223,25 @@ func (s *Sched) computePullRefsLocked(n *node) ([]string, error) {
 	}
 	return out, nil
 }
+
+// pullKeysLocked resolves each PullRefs name to the server's current key —
+// wire.Job.PullKeys, so a runner can tell its local copy of a mutable ref
+// (build-from:K, build-output:F) from the binding this job was computed
+// against. A name absent here gets an empty entry: no expectation, the
+// runner's pull reports the miss as before.
+func (s *Sched) pullKeysLocked(names []string) ([][]byte, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	out := make([][]byte, len(names))
+	for i, name := range names {
+		k, ok, err := s.store.GetKey(s.ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if ok {
+			out[i] = k[:]
+		}
+	}
+	return out, nil
+}

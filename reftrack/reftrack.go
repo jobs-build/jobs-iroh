@@ -2,14 +2,17 @@
 // GC sweep can expire refs unused for the retention window. It is the
 // server-side companion of docs/design/2026-08-25-gc-auto-cleanup.md §3:
 // entries are seeded at first sight (never from CreatedAt — the safe-upgrade
-// rule), touched on every read, and persisted as a CBOR snapshot whose loss
-// is benign (a ref merely looks staler than it is; worst case an early
-// rebuild, "wasteful but never wrong").
+// rule), touched on every read, and persisted as a CBOR snapshot. Losing the
+// clocks alone would be benign (a ref merely looks fresher or staler than it
+// is), but the snapshot also holds the pins, so an unreadable snapshot is an
+// error the caller must not paper over with an empty tracker (issue #22):
+// gcsweep halts instead of re-seeding.
 package reftrack
 
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -218,19 +221,38 @@ type snapEntry struct {
 	Pinned bool  `cbor:"p,omitempty"`
 }
 
+// MaxEntries is the most entries a snapshot may hold and still load — the
+// CBOR decoder's map limit, raised from the library's default of 131,072
+// (which a 12-day-old server passed, losing every clock and pin on restart:
+// issue #22) to the largest the library accepts. Flush refuses to write a
+// snapshot past it, so a written snapshot always loads back.
+const MaxEntries = math.MaxInt32
+
+// snapDecMode decodes snapshots with the map limit at MaxEntries.
+var snapDecMode = func() cbor.DecMode {
+	m, err := cbor.DecOptions{MaxMapPairs: MaxEntries}.DecMode()
+	if err != nil {
+		panic(err)
+	}
+	return m
+}()
+
 // Load replaces the tracker's state with the snapshot at path. A missing
-// file is a clean start (nil); a corrupt one leaves the tracker empty and
-// returns the decode error for logging.
+// file is a clean start (nil). A present file that cannot be read or decoded
+// leaves the tracker empty and returns the error: the caller must treat that
+// as "state unknown", not "no state" — gcsweep refuses to sweep and leaves
+// the file untouched, since sweeping from an empty tracker re-seeds every
+// clock and drops every pin.
 func (t *Tracker) Load(path string) error {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("reftrack: read %s: %w", path, err)
 	}
 	var snap map[string]snapEntry
-	if err := cbor.Unmarshal(b, &snap); err != nil {
+	if err := snapDecMode.Unmarshal(b, &snap); err != nil {
 		return fmt.Errorf("reftrack: decode %s: %w", path, err)
 	}
 	entries := make(map[string]Entry, len(snap))
@@ -255,6 +277,9 @@ func (t *Tracker) Flush(path string) error {
 		snap[name] = snapEntry{First: e.FirstSeen.UnixNano(), Last: e.LastAccess.UnixNano(), Pinned: e.Pinned}
 	}
 	t.mu.Unlock()
+	if len(snap) > MaxEntries {
+		return fmt.Errorf("reftrack: %d entries exceed the snapshot limit of %d", len(snap), MaxEntries)
+	}
 	b, err := cbor.Marshal(snap)
 	if err != nil {
 		return fmt.Errorf("reftrack: encode snapshot: %w", err)
@@ -262,10 +287,34 @@ func (t *Tracker) Flush(path string) error {
 	return writeFileAtomic(path, b)
 }
 
+// writeFileAtomic replaces path with b durably: the temp file is synced
+// before the rename and the directory after it, so a crash leaves either
+// the old snapshot or the new one — never a truncated file, which (being
+// present and unreadable) would halt the GC.
 func writeFileAtomic(path string, b []byte) error {
-	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	dir := filepath.Dir(path)
+	tmp := filepath.Join(dir, "."+filepath.Base(path)+".tmp")
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync() // best effort: some filesystems refuse a directory fsync
+		d.Close()
+	}
+	return nil
 }

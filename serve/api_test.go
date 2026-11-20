@@ -204,6 +204,28 @@ func TestBuildAndAdminAPI(t *testing.T) {
 		t.Fatalf("log view: %+v", view)
 	}
 
+	// Admin refs pages: Limit 1 → one row, More, and the prefix's full count
+	// (submit wrote build:K and build-from-tree:T); After moves on.
+	var page api.RefsReply
+	request(t, ctx, admin, api.TRefs, api.RefsRequest{Prefix: "build", Limit: 1}, api.TRefsReply, &page)
+	if len(page.Refs) != 1 || !page.More || page.Matched != 2 {
+		t.Fatalf("refs page 1: %+v", page)
+	}
+	var page2 api.RefsReply
+	request(t, ctx, admin, api.TRefs, api.RefsRequest{Prefix: "build", Limit: 1, After: page.Refs[0].Name}, api.TRefsReply, &page2)
+	if len(page2.Refs) != 1 || page2.More || page2.Refs[0].Name <= page.Refs[0].Name {
+		t.Fatalf("refs page 2 after %q: %+v", page.Refs[0].Name, page2)
+	}
+
+	// Retry on the build ALPN: a running request has nothing to re-activate
+	// (it may be running again because a sibling's retry re-activated their
+	// shared failed nodes) — success, zero nodes.
+	var rr0 api.RetryReply
+	request(t, ctx, build, api.TRetry, api.CancelRequest{RequestID: sub.RequestID}, api.TRetryReply, &rr0)
+	if rr0.Reactivated != 0 {
+		t.Fatalf("retry of a running request: %+v", rr0)
+	}
+
 	// Cancel on the build ALPN, then the watch stream reaches terminal.
 	request(t, ctx, build, api.TCancel, api.CancelRequest{RequestID: sub.RequestID}, api.TOK, nil)
 	ws = openRequest(t, ctx, build, api.TWatch, api.WatchRequest{RequestID: sub.RequestID})

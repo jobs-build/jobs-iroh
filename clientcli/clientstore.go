@@ -2,6 +2,7 @@ package clientcli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -125,6 +126,12 @@ func (cs *clientStore) MaybeGC(ctx context.Context) {
 		return
 	}
 	stats, err := cs.gc.Sweep(ctx, -1, false)
+	if errors.Is(err, gcsweep.ErrHalted) {
+		// Said on every exclusive command until the operator acts: the
+		// local GC will not run again by itself.
+		fmt.Fprintf(os.Stderr, "WARNING: local %v\n", err)
+		return
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gc sweep failed (will retry within %s): %v\n", gcCheckEvery, err)
 		return

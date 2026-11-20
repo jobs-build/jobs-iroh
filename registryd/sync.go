@@ -76,14 +76,16 @@ func (r *reconnSync) Pin(ctx context.Context, names []string) error {
 	})
 }
 
-func (r *reconnSync) Refs(ctx context.Context) ([]amberclient.RefInfo, error) {
-	var refs []amberclient.RefInfo
+// GetRef looks one ref up on the server by name (amberclient.GetRef — a
+// pull that wants nothing): ErrRefNotFound when absent.
+func (r *reconnSync) GetRef(ctx context.Context, name string) (amberclient.RefInfo, error) {
+	var ri amberclient.RefInfo
 	err := r.do(ctx, func(c *amberclient.Client) error {
 		var err error
-		refs, err = c.Refs(ctx)
+		ri, err = c.GetRef(ctx, name)
 		return err
 	})
-	return refs, err
+	return ri, err
 }
 
 // do runs op on the current client, dialing lazily and retrying once on a

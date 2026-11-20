@@ -1,6 +1,8 @@
 package reftrack
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -154,5 +156,50 @@ func TestLoadMissingAndCorrupt(t *testing.T) {
 	}
 	if total, _ := tr2.Counts(); total != 0 {
 		t.Fatal("corrupt snapshot must leave the tracker empty")
+	}
+}
+
+// A snapshot past the CBOR library's default of 131,072 map pairs — what a
+// 12-day-old server reached in issue #22 — loads back with every clock and
+// pin intact.
+func TestLoadFlushRoundTripPastDefaultLimit(t *testing.T) {
+	const n = 140_000
+	tr := New()
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("build-output:%064x", i)
+	}
+	seeded := time.Now().Add(-time.Hour)
+	tr.Reconcile(names, seeded)
+	tr.Pin(names[7])
+	tr.Pin(names[n-1])
+	path := filepath.Join(t.TempDir(), "refaccess.cbor")
+	if err := tr.Flush(path); err != nil {
+		t.Fatal(err)
+	}
+	tr2 := New()
+	if err := tr2.Load(path); err != nil {
+		t.Fatalf("load %d entries: %v", n, err)
+	}
+	if total, pinned := tr2.Counts(); total != n || pinned != 2 {
+		t.Fatalf("loaded %d entries, %d pinned; want %d and 2", total, pinned, n)
+	}
+	if e, ok := tr2.Get(names[n/2]); !ok || !e.LastAccess.Equal(seeded) {
+		t.Fatalf("clock lost: %+v ok=%v", e, ok)
+	}
+	if e, _ := tr2.Get(names[n-1]); !e.Pinned {
+		t.Fatal("pin lost")
+	}
+}
+
+func TestLoadUnreadableFileIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the file should be: present, but not readable as one.
+	path := filepath.Join(dir, "refaccess.cbor")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := New().Load(path); err == nil {
+		t.Fatal("an unreadable snapshot must be an error, not a clean start")
 	}
 }

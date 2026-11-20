@@ -127,7 +127,7 @@ func clampConns(n int) int {
 	return n
 }
 
-// RefInfo is one reference in a Refs listing.
+// RefInfo is one remote reference (GetRef, Refs).
 type RefInfo struct {
 	Name      string
 	Key       key.Key
@@ -564,45 +564,6 @@ func (c *Client) pullOnce(ctx context.Context, st *amber.Store, name string, mtr
 	}
 	c.log.Debug("amberclient pull complete", "ref", name, "root", root.String())
 	return root, nil
-}
-
-// Refs lists every reference on the server.
-func (c *Client) Refs(ctx context.Context) ([]RefInfo, error) {
-	stream, stop, err := c.openStream(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("amberclient: refs: %w", err)
-	}
-	defer stop()
-	defer CloseStream(stream)
-
-	if err := amberiroh.WriteMsg(stream, amberiroh.Msg{Type: amberiroh.TRefList}); err != nil {
-		return nil, fmt.Errorf("amberclient: refs: %w", err)
-	}
-	m, err := amberiroh.ReadMsg(stream)
-	if err != nil {
-		return nil, fmt.Errorf("amberclient: refs: %w", err)
-	}
-	switch m.Type {
-	case amberiroh.TRefs:
-	case amberiroh.TErr:
-		return nil, fmt.Errorf("amberclient: refs: %w", amberiroh.RemoteFromMsg(m))
-	default:
-		return nil, fmt.Errorf("amberclient: refs: %w: type %d, want TRefs", amberiroh.ErrProtocol, m.Type)
-	}
-	out := make([]RefInfo, 0, len(m.Refs))
-	for _, r := range m.Refs {
-		k, err := key.Parse(r.Key)
-		if err != nil {
-			return nil, fmt.Errorf("amberclient: refs: ref %q: key: %w", r.Name, err)
-		}
-		out = append(out, RefInfo{
-			Name:      r.Name,
-			Key:       k,
-			CreatedAt: time.Unix(0, r.CreatedAt),
-			User:      r.User,
-		})
-	}
-	return out, nil
 }
 
 // Pin asks the server to keep the named refs forever (the GC pin-assert,

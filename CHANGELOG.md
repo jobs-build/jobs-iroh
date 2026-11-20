@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+- **A server with more than 131,072 refs serves images again, and keeps
+  its pins across restarts** (issue #22). Nothing transfers the whole ref
+  list any more, and transport-iroh is unchanged (v0.4.1): the registry
+  resolves K→F with two point lookups — each a pull that wants nothing
+  (`TPull`, the server's `TRef`, an empty `TWants`; no object moves,
+  `amberclient.GetRef`) — and builds its tag list from the server's paged
+  admin `refs` API by prefix. The admin `refs` frame always answers one page
+  of at most 5,000 rows with an `after` cursor (`more`, `matched`
+  additive) — `Limit 0`, which meant "all", gets the first page instead of
+  an unreadable frame; `jobs-client admin refs` and the TUI (`n`/`p`) walk
+  the pages. `stats` counts refs without decoding them. API frame limits
+  are lifted where a client reads a reply: 128 MiB with the CBOR array/map
+  limits tied to the frame size; whatever the server reads keeps 16 MiB and
+  the default limits (a 1-byte element can decode into a 64-byte struct,
+  and access is open). The amber protocol's limits are unchanged — nothing
+  sends it a full listing any more.
+  Tested against a 300k-ref store (image pull, tags, admin paging).
+  **Registries and clients from v0.36.0 or older still list everything in
+  one frame** and fail near 129,000 refs (16 MiB) — `admin stats` warns
+  from 90% of that on.
+- **An unreadable `refaccess.cbor` halts the GC instead of wiping it.** The
+  snapshot now loads past 131,072 entries; one that exists but will not
+  read or decode makes the GC refuse to sweep or pin and never rewrites
+  the file — `admin stats` shows `gc HALTED` and a `WARNING`, the log an
+  error. Restore a readable copy, or move it aside (fresh clocks, no pins):
+  the next sweep (hourly, or `admin gc`) re-reads it and resumes, no
+  restart needed. A missing file is still a first start. Snapshots are now
+  written with fsync, so a crash cannot leave a torn one. Applies to
+  runners' and clients' GC too.
+- **First builds on a fresh server no longer fail an import on a stale
+  runner cache.** Jobs carry the server's key for every pull ref
+  (`wire.Job.PullKeys`, additive); a runner re-pulls a local ref that names
+  anything else instead of trusting it — a `build-from:K` left from before
+  a server wipe (or from the runner's own discarded attempt) sent the
+  import's fetcher resolve to an output the runner never had, on every
+  retry. No ALPN change: old runners behave as before.
+- **Failed requests can be retried and cleared from the CLI.** A resubmit
+  now re-runs the failed nodes it joins, even while earlier failed
+  requests still hold them. New `jobs-client retry (--request-id … |
+  --failed)` re-runs failed requests in place (new `retry` frame on the
+  build ALPN; a request already running again because a sibling's retry
+  re-activated their shared nodes counts as retried) and `jobs-client
+  delete (--request-id … | --failed)` removes
+  them. Design: `docs/design/2026-11-20-ref-lookup-paging.md`.
+
 ## v0.36.0 — 2026-11-07
 
 - **Tests.** A `TESTS.jobs` next to `BUILD.jobs` defines `test()` (the

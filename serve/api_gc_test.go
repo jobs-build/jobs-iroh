@@ -2,6 +2,9 @@ package serve
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,5 +90,53 @@ func TestAdminGCDisabled(t *testing.T) {
 	request(t, ctx, conn, api.TStats, nil, api.TStatsReply, &stats)
 	if stats.GC != nil {
 		t.Fatalf("GC block on a GC-less server: %+v", stats.GC)
+	}
+}
+
+// A server whose refaccess.cbor exists but will not load keeps serving with
+// its GC halted (issue #22): admin gc, pin and unpin answer unavailable, and
+// stats carries the halt in the GC block and as a warning — instead of a
+// silent restart from an empty access record that drops every pin.
+func TestAdminGCHaltedOnUnreadableSnapshot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "refaccess.cbor"), []byte("not a snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv, _, dial := startGCServerIn(t, ctx, dir)
+	conn := dial(ALPNAdmin)
+	k, err := srv.Store.IngestFile(ctx, []byte("halted fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Store.PutRef(ctx, "gc-api:halted", k); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		typ  string
+		body any
+	}{
+		{api.TGC, api.GCRequest{}},
+		{api.TPin, api.PinRequest{Name: "gc-api:halted"}},
+		{api.TUnpin, api.PinRequest{Name: "gc-api:halted"}},
+	} {
+		var e api.Error
+		request(t, ctx, conn, tc.typ, tc.body, api.TError, &e)
+		if e.Code != api.CodeUnavailable || !strings.Contains(e.Text, "gc halted") {
+			t.Fatalf("%s while halted: %+v, want unavailable/gc halted", tc.typ, e)
+		}
+	}
+	var stats api.StatsReply
+	request(t, ctx, conn, api.TStats, nil, api.TStatsReply, &stats)
+	if stats.GC == nil || stats.GC.Halted == "" {
+		t.Fatalf("stats.GC = %+v, want Halted set", stats.GC)
+	}
+	if len(stats.Warnings) == 0 || !strings.Contains(stats.Warnings[0], "GC halted") {
+		t.Fatalf("stats.Warnings = %q", stats.Warnings)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "refaccess.cbor")); err != nil || string(b) != "not a snapshot" {
+		t.Fatalf("snapshot rewritten while halted: %q %v", b, err)
 	}
 }

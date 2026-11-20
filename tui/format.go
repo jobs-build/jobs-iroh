@@ -258,6 +258,9 @@ func statsLines(st api.StatsReply) []string {
 			lines = append(lines, "gc last error  "+g.LastError)
 		}
 	}
+	for _, w := range st.Warnings {
+		lines = append(lines, "WARNING        "+w)
+	}
 	return lines
 }
 

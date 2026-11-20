@@ -122,7 +122,16 @@ type Sched struct {
 	logSubs       map[string]map[chan wire.LogChunk]struct{}
 	fleet         map[string]wire.RunnerInfo
 	lastReqKV     map[string]string
+
+	// refCount caches Stats' ref count for refCountTTL: counting walks
+	// every ref name, and an admin TUI polls stats every two seconds.
+	refCountMu sync.Mutex
+	refCount   int
+	refCountAt time.Time
 }
+
+// refCountTTL bounds how stale Stats' ref count may be.
+const refCountTTL = 10 * time.Second
 
 // New creates/updates the JOBS work-queue, RESULTS and FAILURES streams and
 // the status KV bucket, then starts the scheduler's background work: the results
