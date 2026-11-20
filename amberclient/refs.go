@@ -87,7 +87,7 @@ func (c *Client) RefsPage(ctx context.Context, prefix, after string, limit int) 
 	if err := amberiroh.WriteMsg(stream, req); err != nil {
 		return nil, false, fmt.Errorf("amberclient: refs: %w", err)
 	}
-	m, err := amberiroh.ReadMsg(stream)
+	m, err := amberiroh.ReadListing(stream) // a TRefs reply may be up to MaxListingFrame
 	if err != nil {
 		return nil, false, fmt.Errorf("amberclient: refs: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jobs-build/jobs-iroh/api"
 	"github.com/jobs-build/jobs-iroh/builddef"
@@ -156,5 +157,60 @@ func TestJobsCarryPullKeys(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no pull refs checked")
+	}
+}
+
+// Two failed requests share their failed node (issue #22: several first
+// builds failing on one import). Retrying the first re-activates it; the
+// second is then running again and its retry is a no-op success — so
+// `jobs-client retry --failed` succeeds for both.
+func TestRetrySharedFailedNode(t *testing.T) {
+	e := newEnv(t)
+	var failures atomic.Int32
+	failures.Store(1)
+	release := make(chan struct{})
+	std := e.failFirstBuildFrom(&failures)
+	e.startRunner([]wire.Class{"c0.2-m1", "c1-m1"}, func(job wire.Job) *wire.Result {
+		if job.Kind == wire.KindBuildFrom && failures.Load() < 0 {
+			<-release // hold the re-run so both retries see it live
+		}
+		return std(job)
+	})
+	def := e.treeDef("shared")
+	a, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap := e.watchTerminal(a.RequestID); snap.Phase != "failed" {
+		t.Fatalf("a = %s, want failed", snap.Phase)
+	}
+	// b joins the failed node with no live runner: the joined failure
+	// answers it, like a v0.36 submit, so both requests are failed.
+	e.staleFleet()
+	b, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap := e.watchTerminal(b.RequestID); snap.Phase != "failed" {
+		t.Fatalf("b = %s, want failed", snap.Phase)
+	}
+	e.s.mu.Lock() // the runner is back
+	for id, info := range e.s.fleet {
+		info.SeenNs = time.Now().UnixNano()
+		e.s.fleet[id] = info
+	}
+	e.s.mu.Unlock()
+
+	if n, err := e.s.Retry(e.ctx, a.RequestID); err != nil || n != 1 {
+		t.Fatalf("retry a: %d %v, want 1 re-activated", n, err)
+	}
+	if n, err := e.s.Retry(e.ctx, b.RequestID); err != nil || n != 0 {
+		t.Fatalf("retry b after a: %d %v, want 0 and no error", n, err)
+	}
+	close(release)
+	for _, id := range []string{a.RequestID, b.RequestID} {
+		if snap := e.watchTerminal(id); snap.Phase != "done" {
+			t.Fatalf("%s = %s, want done", id, snap.Phase)
+		}
 	}
 }

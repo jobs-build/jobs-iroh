@@ -16,6 +16,7 @@ import (
 	"github.com/amber-store/core/refstore"
 
 	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/reftrack"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -156,5 +157,46 @@ func TestRefCountWarning(t *testing.T) {
 	}
 	if w := RefCountWarning(LegacyListLimit); w == "" {
 		t.Fatal("no warning at the legacy limit")
+	}
+}
+
+// A halted sweeper resumes on its next sweep, without a restart, once the
+// operator acts: a restored readable snapshot is loaded (its pins with it);
+// a snapshot moved aside is a first start.
+func TestHaltedSweeperResumes(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []string{"restored", "moved aside"} {
+		t.Run(tc, func(t *testing.T) {
+			dir := t.TempDir()
+			st := openStore(t, dir, "build-output:%d", 3)
+			snap := filepath.Join(dir, "refaccess.cbor")
+			if err := os.WriteFile(snap, []byte("torn"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sw := sweeper(t, st, dir)
+			defer sw.Close()
+			if _, err := sw.Sweep(ctx, -1, false); !errors.Is(err, ErrHalted) {
+				t.Fatalf("sweep before repair: %v, want ErrHalted", err)
+			}
+			if tc == "restored" {
+				good := reftrack.New()
+				good.Pin("build-output:2")
+				if err := good.Flush(snap); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Rename(snap, snap+".bad"); err != nil {
+				t.Fatal(err)
+			}
+			stats, err := sw.Sweep(ctx, -1, false)
+			if err != nil || sw.Halted() != "" || stats.Halted != "" {
+				t.Fatalf("sweep after repair: %v, halted %q / %q", err, sw.Halted(), stats.Halted)
+			}
+			if e, _ := sw.Entry("build-output:2"); e.Pinned != (tc == "restored") {
+				t.Fatalf("pin after resume = %v", e.Pinned)
+			}
+			if _, err := os.Stat(snap); err != nil {
+				t.Fatalf("resumed sweeper did not write its snapshot: %v", err)
+			}
+		})
 	}
 }

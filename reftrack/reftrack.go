@@ -287,10 +287,34 @@ func (t *Tracker) Flush(path string) error {
 	return writeFileAtomic(path, b)
 }
 
+// writeFileAtomic replaces path with b durably: the temp file is synced
+// before the rename and the directory after it, so a crash leaves either
+// the old snapshot or the new one — never a truncated file, which (being
+// present and unreadable) would halt the GC.
 func writeFileAtomic(path string, b []byte) error {
-	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	dir := filepath.Dir(path)
+	tmp := filepath.Join(dir, "."+filepath.Base(path)+".tmp")
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync() // best effort: some filesystems refuse a directory fsync
+		d.Close()
+	}
+	return nil
 }

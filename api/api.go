@@ -20,29 +20,42 @@ import (
 	"github.com/jobs-build/jobs-iroh/wire"
 )
 
-// MaxFrame bounds one frame's payload (matches the amber sync protocol,
-// transport-iroh ≥ v0.5.0). It is also the decoder's array/map element
-// budget — an array has no more elements than its frame has bytes —
-// rather than the CBOR library's 131,072 default (issue #22).
+// MaxFrame bounds one frame a client reads (a reply), as transport-iroh's
+// MaxListingFrame bounds a listing. ReadFrame/DecodeBody decode with the
+// array/map element limits tied to it — an array has no more elements than
+// its frame has bytes — rather than the CBOR library's 131,072 default
+// (issue #22).
 const MaxFrame = 128 << 20
+
+// MaxRequestFrame bounds one frame a server reads (a request), decoded by
+// ReadRequest/DecodeRequest with the library's default element limits: the
+// ALPNs are open, and a 1-byte CBOR element can decode into a 64-byte
+// struct, so the server keeps what a peer can make it allocate small.
+const MaxRequestFrame = 16 << 20
 
 // MaxRefsPage caps the rows of one refs reply; the server clamps a larger
 // (or absent) RefsRequest.Limit to it and sets RefsReply.More, so a reply
 // stays far inside MaxFrame however many refs the store holds.
 const MaxRefsPage = 5000
 
-// decMode decodes frames and bodies with the element limits tied to
-// MaxFrame.
-var decMode = func() cbor.DecMode {
-	m, err := cbor.DecOptions{MaxArrayElements: MaxFrame, MaxMapPairs: MaxFrame}.DecMode()
+func mustDecMode(o cbor.DecOptions) cbor.DecMode {
+	m, err := o.DecMode()
 	if err != nil {
 		panic(err)
 	}
 	return m
-}()
+}
+
+var (
+	// decMode decodes replies, element limits tied to MaxFrame.
+	decMode = mustDecMode(cbor.DecOptions{MaxArrayElements: MaxFrame, MaxMapPairs: MaxFrame})
+	// reqDecMode decodes requests with the library's default limits.
+	reqDecMode = mustDecMode(cbor.DecOptions{})
+)
 
 // frameStep is the first allocation for a frame payload and the floor of
-// each doubling, so memory follows the bytes that arrive, not the header.
+// each doubling, so the raw frame buffer follows the bytes that arrive, not
+// the header.
 const frameStep = 1 << 20
 
 // Frame types, client → server.
@@ -113,15 +126,27 @@ func WriteFrame(w io.Writer, t string, v any) error {
 	return err
 }
 
-// ReadFrame reads one frame, returning its type and raw body.
+// ReadFrame reads one reply frame (up to MaxFrame), returning its type and
+// raw body; decode the body with DecodeBody.
 func ReadFrame(r io.Reader) (string, cbor.RawMessage, error) {
+	return readFrame(r, MaxFrame, decMode)
+}
+
+// ReadRequest reads one request frame (up to MaxRequestFrame, default
+// element limits) — what a server reads from a peer; decode the body with
+// DecodeRequest.
+func ReadRequest(r io.Reader) (string, cbor.RawMessage, error) {
+	return readFrame(r, MaxRequestFrame, reqDecMode)
+}
+
+func readFrame(r io.Reader, maxFrame uint32, dm cbor.DecMode) (string, cbor.RawMessage, error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return "", nil, err
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
-	if n > MaxFrame {
-		return "", nil, fmt.Errorf("frame of %d bytes exceeds %d", n, MaxFrame)
+	if n > maxFrame {
+		return "", nil, fmt.Errorf("frame of %d bytes exceeds %d", n, maxFrame)
 	}
 	payload := make([]byte, 0, min(int(n), frameStep))
 	for len(payload) < int(n) {
@@ -136,7 +161,7 @@ func ReadFrame(r io.Reader) (string, cbor.RawMessage, error) {
 		}
 	}
 	var f frame
-	if err := decMode.Unmarshal(payload, &f); err != nil {
+	if err := dm.Unmarshal(payload, &f); err != nil {
 		return "", nil, fmt.Errorf("decode frame: %w", err)
 	}
 	if f.T == "" {
@@ -145,12 +170,21 @@ func ReadFrame(r io.Reader) (string, cbor.RawMessage, error) {
 	return f.T, f.B, nil
 }
 
-// DecodeBody decodes a frame body into v.
+// DecodeBody decodes a reply body into v (element limits tied to MaxFrame).
 func DecodeBody(b cbor.RawMessage, v any) error {
 	if len(b) == 0 {
 		return errors.New("frame without body")
 	}
 	return decMode.Unmarshal(b, v)
+}
+
+// DecodeRequest decodes a request body into v with the library's default
+// element limits — the server-side counterpart of DecodeBody.
+func DecodeRequest(b cbor.RawMessage, v any) error {
+	if len(b) == 0 {
+		return errors.New("frame without body")
+	}
+	return reqDecMode.Unmarshal(b, v)
 }
 
 // --- payloads ---

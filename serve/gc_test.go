@@ -20,12 +20,17 @@ import (
 // are manual and deterministic.
 func startGCServer(t *testing.T, ctx context.Context) (*Server, *gcRunner, func(alpn string) *iroh.Conn) {
 	t.Helper()
-
 	// dir must outlive the server shutdown: t.TempDir()'s RemoveAll cleanup
-	// is registered here, before the cancel-and-wait t.Cleanup below, so it
-	// runs AFTER that cleanup (t.Cleanup runs LIFO) and gcr's final tracker
-	// flush on Close doesn't hit ENOENT.
-	dir := t.TempDir()
+	// is registered here, before the cancel-and-wait t.Cleanup in
+	// startGCServerIn, so it runs AFTER that cleanup (t.Cleanup runs LIFO)
+	// and gcr's final tracker flush on Close doesn't hit ENOENT.
+	return startGCServerIn(t, ctx, t.TempDir())
+}
+
+// startGCServerIn is startGCServer over a prepared data dir (whose
+// TempDir cleanup the caller registered first).
+func startGCServerIn(t *testing.T, ctx context.Context, dir string) (*Server, *gcRunner, func(alpn string) *iroh.Conn) {
+	t.Helper()
 
 	ready := make(chan *Server, 1)
 	captured := make(chan *gcRunner, 1)

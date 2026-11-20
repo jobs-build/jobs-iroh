@@ -92,12 +92,14 @@ type Stats struct {
 // is halted on an unreadable access snapshot.
 var ErrHalted = errors.New("gc halted")
 
-// LegacyListLimit is the ref count past which peers from v0.36.0 and older
-// fail: their registries and admin clients list every ref in one CBOR array,
-// which their decoders refuse past 131,072 elements (issue #22). The sweep
-// warns from legacyListWarn on, so a mixed fleet is told before it breaks.
+// LegacyListLimit approximates the ref count past which peers from v0.36.0
+// and older fail: their registries and admin clients list every ref in one
+// frame, which they refuse past 131,072 CBOR elements or 16 MiB — and at
+// ~130 bytes a ref the frame fills first, near 129,000 refs (issue #22).
+// The sweep and admin stats warn from legacyListWarn on, so a mixed fleet
+// is told before it breaks.
 const (
-	LegacyListLimit = 131_072
+	LegacyListLimit = 129_000
 	legacyListWarn  = LegacyListLimit * 9 / 10
 )
 
@@ -107,7 +109,7 @@ func RefCountWarning(n int) string {
 	if n < legacyListWarn {
 		return ""
 	}
-	return fmt.Sprintf("%d refs: jobs-registry and jobs-client v0.36.0 or older list every ref in one frame and fail past %d — upgrade them", n, LegacyListLimit)
+	return fmt.Sprintf("%d refs: jobs-registry and jobs-client v0.36.0 or older list every ref in one frame and fail past about %d — upgrade them", n, LegacyListLimit)
 }
 
 // Sweeper owns the GC feature: the access tracker, the mark-sweep
@@ -128,9 +130,11 @@ type Sweeper struct {
 
 	sweepMu sync.Mutex // serializes sweeps (hourly loop vs admin gc)
 
-	// halted is set once, in New, when the snapshot exists but would not
-	// load: the sweeper then never sweeps and never writes the snapshot,
-	// so the unreadable file survives for inspection. Immutable after New.
+	// halted is set (in New) when the snapshot exists but would not load:
+	// the sweeper then never sweeps and never writes the snapshot, so the
+	// unreadable file survives for inspection. Each Sweep re-reads the file
+	// (resume) and clears it once the file reads again or is gone.
+	haltMu sync.Mutex
 	halted string
 
 	mu    sync.Mutex // guards stats
@@ -153,7 +157,7 @@ func New(log *slog.Logger, store *amber.Store, opts Options) (*Sweeper, error) {
 		// retention, then everything unread in between does) and drop every
 		// pin, protecting nothing a running image needs — so refuse, loudly,
 		// and leave the file alone. Not fatal: the host keeps serving.
-		halted = fmt.Sprintf("access snapshot %s unreadable (%v); GC will not sweep or rewrite it — restore a readable copy, or move it aside to start over with fresh clocks and no pins, then restart", snapPath, err)
+		halted = haltReason(snapPath, err)
 		log.Error("gc: HALTED: "+halted, "snapshot", snapPath, "error", err)
 	}
 	coll, err := gc.Open(filepath.Join(opts.StoreDir, "closures"), store.Objects(), store.RefStore(), gc.Options{
@@ -233,7 +237,7 @@ func (g *Sweeper) Close() {
 // snapshot on disk is the only copy of the real clocks and pins and must
 // not be replaced by what this run saw.
 func (g *Sweeper) flush(when string) {
-	if g.halted != "" {
+	if g.Halted() != "" {
 		return
 	}
 	if err := g.tracker.Flush(g.snapPath); err != nil {
@@ -241,8 +245,48 @@ func (g *Sweeper) flush(when string) {
 	}
 }
 
+// haltReason is the operator-facing explanation of a halt on snapPath.
+func haltReason(snapPath string, err error) string {
+	return fmt.Sprintf("access snapshot %s unreadable (%v); GC will not sweep or rewrite it — restore a readable copy, or move it aside to start over with fresh clocks and no pins; the next sweep (or admin gc) resumes", snapPath, err)
+}
+
 // Halted reports why the sweeper refuses to run ("" when it runs).
-func (g *Sweeper) Halted() string { return g.halted }
+func (g *Sweeper) Halted() string {
+	g.haltMu.Lock()
+	defer g.haltMu.Unlock()
+	return g.halted
+}
+
+// setHalted records the halt reason ("" = running) in the sweeper and its
+// stats.
+func (g *Sweeper) setHalted(reason string) {
+	g.haltMu.Lock()
+	g.halted = reason
+	g.haltMu.Unlock()
+	g.mu.Lock()
+	g.stats.Halted = reason
+	g.mu.Unlock()
+}
+
+// resume re-reads the snapshot of a halted sweeper and reports whether it
+// may sweep. A readable file replaces the tracker's state (touches since
+// the halt are lost — benign; the registry re-asserts its pins hourly); a
+// missing one — the operator moved it aside — is a first start; a still
+// unreadable one keeps the halt (with the latest error). So a transient
+// read error, or an operator's repair, needs no restart. Caller holds
+// sweepMu.
+func (g *Sweeper) resume() bool {
+	if g.Halted() == "" {
+		return true
+	}
+	if err := g.tracker.Load(g.snapPath); err != nil {
+		g.setHalted(haltReason(g.snapPath, err))
+		return false
+	}
+	g.setHalted("")
+	g.log.Warn("gc: access snapshot readable again (or gone: a first start); GC resumes", "snapshot", g.snapPath)
+	return true
+}
 
 // Sweep is one full tick: reconcile the tracker with the ref listing,
 // expire cold refs, score the store (advisory mark), run a cycle when
@@ -251,9 +295,10 @@ func (g *Sweeper) Halted() string { return g.halted }
 func (g *Sweeper) Sweep(ctx context.Context, garbage float64, force bool) (Stats, error) {
 	g.sweepMu.Lock()
 	defer g.sweepMu.Unlock()
-	if g.halted != "" {
-		g.log.Error("gc: HALTED: sweep refused: " + g.halted)
-		return g.failSweep(fmt.Errorf("%w: %s", ErrHalted, g.halted))
+	if !g.resume() {
+		h := g.Halted()
+		g.log.Error("gc: HALTED: sweep refused: " + h)
+		return g.failSweep(fmt.Errorf("%w: %s", ErrHalted, h))
 	}
 	now := time.Now()
 
@@ -406,8 +451,8 @@ func (g *Sweeper) Guard() amber.RefGuard { return g.coll }
 // While halted it fails with ErrHalted: the pin could not be persisted, and
 // reporting success for a pin the next restart forgets would be a lie.
 func (g *Sweeper) Pin(ctx context.Context, name string) (amber.RefInfo, reftrack.Entry, error) {
-	if g.halted != "" {
-		return amber.RefInfo{}, reftrack.Entry{}, fmt.Errorf("%w: %s", ErrHalted, g.halted)
+	if h := g.Halted(); h != "" {
+		return amber.RefInfo{}, reftrack.Entry{}, fmt.Errorf("%w: %s", ErrHalted, h)
 	}
 	ri, err := g.store.GetRef(ctx, name)
 	if err != nil {

@@ -360,10 +360,13 @@ closure is present — objects-before-ref holds across the wire too.
 ## 5. Transport
 
 **Client API framing** (`jobs-build/1.0`, `jobs-admin/1.0`): each frame is a
-4-byte big-endian length + a CBOR envelope `{t: string, b: bytes}`; max
-frame 128 MiB (the decoder's array/map limits equal it — an array has no
-more elements than its frame has bytes — and the reader allocates as bytes
-arrive, not what the header claims); one request per stream, but watch/log
+4-byte big-endian length + a CBOR envelope `{t: string, b: bytes}`. A
+reply may be up to 128 MiB, decoded with array/map limits equal to that
+(an array has no more elements than its frame has bytes); a request — what
+the server reads from an unauthenticated peer — stays within 16 MiB and the
+CBOR library's default element limits, because a 1-byte element can decode
+into a 64-byte struct. Readers grow the raw buffer as bytes arrive, not as
+the header claims. One request per stream, but watch/log
 streams stay open for server-pushed frames. Build-ALPN requests: `submit`,
 `watch`, `logs`, `cancel`, `retry`. Admin adds: `requests`, `fleet`,
 `stats`, `refs`, `delete`, `diagnose`, `gc`, `pin`/`unpin`. Replies:
@@ -380,8 +383,10 @@ and clients walk pages with the `after` cursor; `stats` counts refs
 without decoding them (cached 10 s). The amber protocol has the same
 shape since transport-iroh v0.5.0: `TRefGet{name}` is a point lookup
 answered by the ref record alone (a read — it touches the GC clock), and
-`TRefList{prefix, after, limit}` pages at most 10,000 refs with `more`.
-The registry resolves K→F with two `TRefGet`s and lists tags by prefix.
+`TRefList{prefix, after, limit}` pages at most 10,000 refs with `more`
+(the same split: only a client reading a listing, `ReadListing`, takes
+frames past 16 MiB). The registry resolves K→F with two `TRefGet`s and
+lists tags by prefix.
 
 **The NATS tunnel** (`jobs-runner-nats/3.0`, `natsiroh/`): the runner's
 stock NATS client is given a custom dialer that opens an iroh stream and

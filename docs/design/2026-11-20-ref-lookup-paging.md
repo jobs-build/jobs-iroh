@@ -49,10 +49,18 @@ command to delete them.
   most `MaxRefPage` (10,000) refs sorting after `After`, `More` (21) set
   when matches remain, a page ended early before half a frame. `Limit 0`
   is the old unpaged listing, refused with `bad-request` instead of sent
-  unreadable when it passes `MaxFrame`. Old servers ignore the fields:
-  clients filter the reply and stop on a missing `More`.
-- `MaxFrame` 128 MiB; decoder array/map limits equal to it; `ReadMsg`
-  grows its buffer as bytes arrive.
+  unreadable when it passes `MaxListingFrame`. Old servers ignore the
+  fields: clients filter the reply and stop on a missing `More`. A
+  negative `Limit` is the unpaged listing.
+- Limits are raised **only where a client reads a listing**: a `TRefs`
+  frame may be up to `MaxListingFrame` (128 MiB), read with `ReadListing`,
+  whose array/map limits equal that size. `ReadMsg` — every request a
+  server reads, every transfer frame — keeps `MaxFrame` (16 MiB) and the
+  library's 131,072 elements. A first draft tied the element limits to a
+  128 MiB `MaxFrame` everywhere; review measured a 20 MB request of empty
+  `Refs` maps decoding into 1.28 GiB (a 1-byte element becomes a 64-byte
+  struct), on an ALPN anyone may dial. Readers grow the raw buffer as
+  bytes arrive.
 
 amber-store-core's refstore has no ranged iterator, so a page still scans
 every name server-side (decoding only the page). That is a CPU cost, not a
@@ -61,7 +69,10 @@ that makes pages O(page).
 
 ## jobs-iroh
 
-- `api.MaxFrame` 128 MiB, same decoder limits, incremental read.
+- The same split in `api/`: replies (`ReadFrame`/`DecodeBody`) up to
+  `MaxFrame` 128 MiB with element limits tied to it; requests
+  (`ReadRequest`/`DecodeRequest`, what `serve` reads) up to
+  `MaxRequestFrame` 16 MiB with the default limits. Incremental reads.
   `RefsRequest.After` + `RefsReply.More/Matched`; the server clamps every
   page to `api.MaxRefsPage` (5,000) — `Limit 0`, which meant "all",
   included: an old client now gets the first page instead of `EOF`.
@@ -74,11 +85,16 @@ that makes pages O(page).
   `ErrHalted`, no flush ever rewrites the file (it is the only copy of the
   real clocks and pins), `GCStats.Halted` and `StatsReply.Warnings` say
   why. Recovery is an operator decision: restore a readable copy, or move
-  the file aside (fresh clocks, no pins) and restart. This applies to
-  runners and clients too — their caches are re-pullable, but a silently
-  re-seeded GC is the failure this design removes.
-- `StatsReply.Warnings` also warns from 90% of 131,072 refs on: peers from
-  v0.36.0 and older still list everything in one frame.
+  the file aside (fresh clocks, no pins). Each sweep of a halted sweeper
+  re-reads the file and resumes once it loads or is gone — no restart,
+  and a transient read error heals itself. Snapshot writes fsync the file
+  and its directory, so a crash cannot leave a torn snapshot that would
+  halt the GC. This applies to runners and clients too — their caches are
+  re-pullable, but a silently re-seeded GC is the failure this design
+  removes.
+- `StatsReply.Warnings` also warns from 90% of ~129,000 refs on: peers
+  from v0.36.0 and older still list everything in one frame, which fills
+  16 MiB at about that count (before their 131,072-element limit).
 
 ## The first-build import failure
 
@@ -107,6 +123,11 @@ it. Now a submit re-activates the failed nodes of the closure it joined
 with a fresh budget; orchestrators re-advance) when the platform has a
 live runner. `retry` (build ALPN, `jobs-client retry --request-id … |
 --failed`) does the same for an existing request in place; a request the
-no-runners watchdog failed re-joins its target. `jobs-client delete
+no-runners watchdog failed re-joins its target, and a request already
+running again — a sibling's retry re-activated their shared failed node —
+is answered with 0 re-activated, not an error, so `--failed` works for
+issue #22's several requests failing on one import. A submit re-activates
+only failures from before its own join: a failure its join produced
+synchronously (a sub-build cycle) would only fail again. `jobs-client delete
 --request-id … | --failed` removes requests (admin `delete`). FAILURES
 records are untouched, so `diagnose` keeps the history across retries.

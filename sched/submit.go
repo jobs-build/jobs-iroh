@@ -148,13 +148,15 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 	// consults s.requests, so the very first enqueue already carries the
 	// request's resources.
 	s.requests[id] = r
+	joinStart := time.Now()
 	r.target = s.require(kind, k, req.Def, def.Platform, nil, map[string]struct{}{id: {}}, req.Label)
 	// Resubmitting is the retry: failed nodes the new request joined —
 	// held failed by earlier requests' interest — run again (issue #22).
-	// Only with a live runner to run them; otherwise the joined failure
-	// answers the submit as before.
+	// Only failures from before this join (its own synchronous ones would
+	// just fail again), and only with a live runner to run them; otherwise
+	// the joined failure answers the submit as before.
 	if s.livePlatformLocked(r.platform, time.Now()) {
-		if n := s.retryFailedLocked(r.target); n > 0 {
+		if n := s.retryFailedLocked(r.target, joinStart); n > 0 {
 			s.log.Info(what+" resubmit re-activated failed nodes", "request", id, "nodes", n)
 		}
 	}

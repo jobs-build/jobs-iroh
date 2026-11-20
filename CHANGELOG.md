@@ -12,18 +12,23 @@
   additive) — `Limit 0`, which meant "all", gets the first page instead of
   an unreadable frame; `jobs-client admin refs` and the TUI (`n`/`p`) walk
   the pages. `stats` counts refs without decoding them. Frame limits are
-  lifted too: 128 MiB frames in both protocols with the CBOR array/map
-  limits tied to the frame size, read incrementally. Tested against a
-  300k-ref store (image pull, tags, admin paging). **Registries and
-  clients from v0.36.0 or older still list everything in one frame** and
-  fail past 131,072 refs — `admin stats` warns from 90% of that on.
+  lifted where a client reads a reply: a listing (`ReadListing`) or an API
+  reply may be 128 MiB with the CBOR array/map limits tied to the frame
+  size; whatever a server reads keeps 16 MiB and the default limits (a
+  1-byte element can decode into a 64-byte struct, and access is open).
+  Tested against a 300k-ref store (image pull, tags, admin paging).
+  **Registries and clients from v0.36.0 or older still list everything in
+  one frame** and fail near 129,000 refs (16 MiB) — `admin stats` warns
+  from 90% of that on.
 - **An unreadable `refaccess.cbor` halts the GC instead of wiping it.** The
   snapshot now loads past 131,072 entries; one that exists but will not
   read or decode makes the GC refuse to sweep or pin and never rewrites
   the file — `admin stats` shows `gc HALTED` and a `WARNING`, the log an
-  error. Restore a readable copy, or move it aside (fresh clocks, no pins)
-  and restart. A missing file is still a first start. Applies to runners'
-  and clients' GC too.
+  error. Restore a readable copy, or move it aside (fresh clocks, no pins):
+  the next sweep (hourly, or `admin gc`) re-reads it and resumes, no
+  restart needed. A missing file is still a first start. Snapshots are now
+  written with fsync, so a crash cannot leave a torn one. Applies to
+  runners' and clients' GC too.
 - **First builds on a fresh server no longer fail an import on a stale
   runner cache.** Jobs carry the server's key for every pull ref
   (`wire.Job.PullKeys`, additive); a runner re-pulls a local ref that names
@@ -35,7 +40,9 @@
   now re-runs the failed nodes it joins, even while earlier failed
   requests still hold them. New `jobs-client retry (--request-id … |
   --failed)` re-runs failed requests in place (new `retry` frame on the
-  build ALPN) and `jobs-client delete (--request-id … | --failed)` removes
+  build ALPN; a request already running again because a sibling's retry
+  re-activated their shared nodes counts as retried) and `jobs-client
+  delete (--request-id … | --failed)` removes
   them. Design: `docs/design/2026-11-20-ref-lookup-paging.md`.
 
 ## v0.36.0 — 2026-11-07

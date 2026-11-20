@@ -70,7 +70,7 @@ func (svc *apiService) serveStream(ctx context.Context, remote string, stream ne
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	t, body, err := api.ReadFrame(stream)
+	t, body, err := api.ReadRequest(stream)
 	if err != nil {
 		return // client vanished before asking anything
 	}
@@ -99,7 +99,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 	switch t {
 	case api.TSubmit:
 		var req api.SubmitRequest
-		if err := api.DecodeBody(body, &req); err != nil {
+		if err := api.DecodeRequest(body, &req); err != nil {
 			return badFrame(t, err)
 		}
 		sub, err := svc.sd.Submit(ctx, req)
@@ -113,7 +113,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 
 	case api.TWatch:
 		var req api.WatchRequest
-		if err := api.DecodeBody(body, &req); err != nil {
+		if err := api.DecodeRequest(body, &req); err != nil {
 			return badFrame(t, err)
 		}
 		ch, stop, err := svc.sd.Watch(ctx, req.RequestID)
@@ -130,7 +130,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 
 	case api.TLogs:
 		var req api.LogsRequest
-		if err := api.DecodeBody(body, &req); err != nil {
+		if err := api.DecodeRequest(body, &req); err != nil {
 			return badFrame(t, err)
 		}
 		view, ch, stop, err := svc.sd.Logs(ctx, req.Node, req.Follow)
@@ -150,7 +150,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 
 	case api.TCancel:
 		var req api.CancelRequest
-		if err := api.DecodeBody(body, &req); err != nil {
+		if err := api.DecodeRequest(body, &req); err != nil {
 			return badFrame(t, err)
 		}
 		if err := svc.sd.Cancel(ctx, req.RequestID); err != nil {
@@ -162,7 +162,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 
 	case api.TRetry:
 		var req api.CancelRequest
-		if err := api.DecodeBody(body, &req); err != nil {
+		if err := api.DecodeRequest(body, &req); err != nil {
 			return badFrame(t, err)
 		}
 		n, err := svc.sd.Retry(ctx, req.RequestID)
@@ -206,7 +206,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 	case api.TRefs:
 		var req api.RefsRequest
 		if len(body) > 0 {
-			if err := api.DecodeBody(body, &req); err != nil {
+			if err := api.DecodeRequest(body, &req); err != nil {
 				return badFrame(t, err)
 			}
 		}
@@ -242,7 +242,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 
 	case api.TDelete:
 		var req api.CancelRequest
-		if err := api.DecodeBody(body, &req); err != nil {
+		if err := api.DecodeRequest(body, &req); err != nil {
 			return badFrame(t, err)
 		}
 		if err := svc.sd.Delete(ctx, req.RequestID); err != nil {
@@ -254,7 +254,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 
 	case api.TDiagnose:
 		var req api.DiagnoseRequest
-		if err := api.DecodeBody(body, &req); err != nil {
+		if err := api.DecodeRequest(body, &req); err != nil {
 			return badFrame(t, err)
 		}
 		reply, err := svc.sd.Diagnose(ctx, req)
@@ -270,7 +270,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 		}
 		var req api.GCRequest
 		if len(body) > 0 {
-			if err := api.DecodeBody(body, &req); err != nil {
+			if err := api.DecodeRequest(body, &req); err != nil {
 				return badFrame(t, err)
 			}
 		}
@@ -294,7 +294,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 			return &sched.Error{Code: api.CodeUnavailable, Text: "GC is disabled on this server (--gc-retention 0)"}
 		}
 		var req api.PinRequest
-		if err := api.DecodeBody(body, &req); err != nil {
+		if err := api.DecodeRequest(body, &req); err != nil {
 			return badFrame(t, err)
 		}
 		if req.Name == "" {

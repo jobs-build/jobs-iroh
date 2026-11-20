@@ -217,11 +217,13 @@ func TestBuildAndAdminAPI(t *testing.T) {
 		t.Fatalf("refs page 2 after %q: %+v", page.Refs[0].Name, page2)
 	}
 
-	// Retry on the build ALPN: a running request is not failed.
-	var re api.Error
-	request(t, ctx, build, api.TRetry, api.CancelRequest{RequestID: sub.RequestID}, api.TError, &re)
-	if re.Code != api.CodeBadRequest {
-		t.Fatalf("retry of a running request: %+v", re)
+	// Retry on the build ALPN: a running request has nothing to re-activate
+	// (it may be running again because a sibling's retry re-activated their
+	// shared failed nodes) — success, zero nodes.
+	var rr0 api.RetryReply
+	request(t, ctx, build, api.TRetry, api.CancelRequest{RequestID: sub.RequestID}, api.TRetryReply, &rr0)
+	if rr0.Reactivated != 0 {
+		t.Fatalf("retry of a running request: %+v", rr0)
 	}
 
 	// Cancel on the build ALPN, then the watch stream reaches terminal.
